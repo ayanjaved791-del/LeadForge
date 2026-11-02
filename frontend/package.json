@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "prebuild": "node scripts/check-vercel-root.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
