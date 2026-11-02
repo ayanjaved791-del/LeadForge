@@ -12,16 +12,18 @@ import { ChipSelect } from "@/components/shared/Form";
 import { ScoreBadge } from "@/components/shared/Badges";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useIsDark } from "@/hooks/use-chart-colors";
 import { BusinessSheet } from "./BusinessSheet";
 import { SearchForm, useCategories, useDiscovery, useSaveLead } from "./shared";
 
 const BAND_HEX = { low: "#98a2b3", medium: "#465fff", high: "#f79009", very_high: "#12b76a" } as const;
+const bandHex = (band: keyof typeof BAND_HEX) => (band === "medium" && document.documentElement.classList.contains("dark") ? "#fafafa" : BAND_HEX[band]);
 const iconCache = new Map<string, L.DivIcon>();
 function markerIcon(b: Business, active: boolean) {
-  const key = `${b.band}-${active}-${!!b.lead_id}`;
+  const key = `${b.band}-${active}-${!!b.lead_id}-${document.documentElement.classList.contains("dark")}`;
   if (!iconCache.has(key)) {
     const size = active ? 30 : 22;
-    const color = BAND_HEX[b.band];
+    const color = bandHex(b.band);
     iconCache.set(
       key,
       L.divIcon({
@@ -60,6 +62,7 @@ function FitTo({ center, radius, points, focus }: { center: [number, number] | n
 
 export default function MapExplorer() {
   const { last, run, running } = useDiscovery();
+  const dark = useIsDark();
   const cats = useCategories();
   const save = useSaveLead();
   const [point, setPoint] = useState<{ lat: number; lng: number } | null>(null);
@@ -113,7 +116,7 @@ export default function MapExplorer() {
                   }}
                   className={cn("flex w-full items-start gap-3 px-5 py-3 text-left hover:bg-gray-50 dark:hover:bg-white/[0.03]", activeId === b.id && "bg-brand-25 dark:bg-brand-500/10")}
                 >
-                  <span className="mt-1.5 size-2.5 shrink-0 rounded-full" style={{ background: BAND_HEX[b.band] }} />
+                  <span className="mt-1.5 size-2.5 shrink-0 rounded-full" style={{ background: bandHex(b.band) }} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-theme-sm font-medium text-gray-800 dark:text-white/90">{b.name}</span>
                     <span className="block truncate text-theme-xs text-gray-500 dark:text-gray-400">{b.category_label} · {WEBSITE_STATUS[b.website_status].label}</span>
@@ -134,7 +137,7 @@ export default function MapExplorer() {
             />
             <ClickToPick onPick={setPoint} />
             <FitTo center={center} radius={last?.result.radius ?? null} points={points} focus={focus} />
-            {center && last && <Circle center={center} radius={last.result.radius} pathOptions={{ color: "#465fff", weight: 1.5, fillOpacity: 0.05 }} />}
+            {center && last && <Circle center={center} radius={last.result.radius} pathOptions={{ color: dark ? "#fafafa" : "#465fff", weight: 1.5, fillOpacity: 0.05 }} />}
             {point && <Circle center={[point.lat, point.lng]} radius={last?.params.radius ?? 2000} pathOptions={{ color: "#f79009", weight: 1.5, dashArray: "6 6", fillOpacity: 0.04 }} />}
             {items.map((b) => (
               <Marker key={b.id} position={[b.lat, b.lng]} icon={markerIcon(b, activeId === b.id)} eventHandlers={{ click: () => setActiveId(b.id) }}>
@@ -167,7 +170,7 @@ export default function MapExplorer() {
           <div className="pointer-events-none absolute bottom-6 left-3 z-[400] rounded-lg bg-white/95 px-3 py-2 text-[11px] shadow-theme-md dark:bg-gray-900/95">
             {Object.entries(BAND_HEX).map(([k, c]) => (
               <span key={k} className="mr-3 inline-flex items-center gap-1.5 text-gray-600 last:mr-0 dark:text-gray-300">
-                <span className="size-2.5 rounded-full" style={{ background: c }} />
+                <span className="size-2.5 rounded-full" style={{ background: k === "medium" && dark ? "#fafafa" : c }} />
                 {BANDS[k as keyof typeof BANDS].label.replace(" Opportunity", "")}
               </span>
             ))}

@@ -23,6 +23,7 @@ import {
 import { api } from "@/lib/api";
 import { useMe } from "@/hooks/use-auth";
 import { useMutate } from "@/hooks/use-mutate";
+import { useChartColors } from "@/hooks/use-chart-colors";
 import { change, dt, getCurrency, money, num, relDay } from "@/lib/format";
 import { LEAD_STATUSES } from "@/lib/constants";
 import type { ActivityType, LeadStatus, UsageRow, WebsiteStatus } from "@/lib/types";
@@ -77,6 +78,7 @@ export default function Dashboard() {
   const [fuIndex, setFuIndex] = useState(0);
   const [leadOpen, setLeadOpen] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
+  const c = useChartColors();
   const { data, isLoading, error, refetch } = useQuery({ queryKey: ["dashboard", year], queryFn: () => api.get<DashboardData>("/dashboard", { year }) });
   const setCurrencyM = useMutate((c: string) => api.patch("/auth/profile", { currency: c }), { invalidate: [["me"], ["dashboard"]] });
 
@@ -153,12 +155,12 @@ export default function Dashboard() {
                   <AreaChart data={spark} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
                     <defs>
                       <linearGradient id="spark" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#465fff" stopOpacity={0.35} />
-                        <stop offset="100%" stopColor="#465fff" stopOpacity={0} />
+                        <stop offset="0%" stopColor={c.primary} stopOpacity={0.35} />
+                        <stop offset="100%" stopColor={c.primary} stopOpacity={0} />
                       </linearGradient>
                     </defs>
                     <Tooltip content={<ChartTooltip valueFmt={(v: number) => money(v)} />} />
-                    <Area type="monotone" dataKey="value" name="Added value" stroke="#465fff" strokeWidth={2} fill="url(#spark)" />
+                    <Area type="monotone" dataKey="value" name="Added value" stroke={c.primary} strokeWidth={2} fill="url(#spark)" />
                   </AreaChart>
                 </ResponsiveContainer>
               ) : (
@@ -254,14 +256,14 @@ export default function Dashboard() {
                 <CartesianGrid vertical={false} stroke="currentColor" className="text-gray-100 dark:text-gray-800" />
                 <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: "#667085", fontSize: 12 }} />
                 <YAxis axisLine={false} tickLine={false} allowDecimals={false} tick={{ fill: "#667085", fontSize: 12 }} tickFormatter={(v) => (metric === "revenue" ? new Intl.NumberFormat(undefined, { notation: "compact" }).format(v) : v)} />
-                <Tooltip cursor={{ fill: "rgba(70,95,255,0.06)" }} content={<ChartTooltip valueFmt={metric === "revenue" ? (v: number) => money(v) : undefined} />} />
+                <Tooltip cursor={{ fill: c.dark ? "rgba(255,255,255,0.05)" : "rgba(70,95,255,0.06)" }} content={<ChartTooltip valueFmt={metric === "revenue" ? (v: number) => money(v) : undefined} />} />
                 {metric === "flow" ? (
                   <>
-                    <Bar dataKey="leads" name="Leads added" stackId="a" fill="#465fff" radius={[0, 0, 0, 0]} />
-                    <Bar dataKey="won" name="Deals won" stackId="a" fill="#9cb9ff" radius={[5, 5, 0, 0]} />
+                    <Bar dataKey="leads" name="Leads added" stackId="a" fill={c.primary} radius={[0, 0, 0, 0]} />
+                    <Bar dataKey="won" name="Deals won" stackId="a" fill={c.secondary} radius={[5, 5, 0, 0]} />
                   </>
                 ) : (
-                  <Bar dataKey="revenue" name="Revenue" fill="#465fff" radius={[5, 5, 0, 0]} />
+                  <Bar dataKey="revenue" name="Revenue" fill={c.primary} radius={[5, 5, 0, 0]} />
                 )}
               </BarChart>
             </ResponsiveContainer>

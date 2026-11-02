@@ -18,12 +18,12 @@ export function Trend({ value, suffix = "than last month" }: { value: number | n
 
 export function StatCard({ title, value, icon: Icon, tone, footer }: { title: string; value: ReactNode; icon: ComponentType<{ className?: string }>; tone: "brand" | "success" | "orange" | "pink" | "purple" | "gray"; footer?: ReactNode }) {
   const tones = {
-    brand: "bg-brand-50 text-brand-500 dark:bg-brand-500/15 dark:text-brand-400",
-    success: "bg-success-50 text-success-600 dark:bg-success-500/15 dark:text-success-500",
-    orange: "bg-orange-50 text-orange-500 dark:bg-orange-500/15 dark:text-orange-400",
-    pink: "bg-pink-50 text-theme-pink-500 dark:bg-pink-500/15 dark:text-pink-400",
-    purple: "bg-violet-50 text-theme-purple-500 dark:bg-violet-500/15 dark:text-violet-400",
-    gray: "bg-gray-100 text-gray-600 dark:bg-white/5 dark:text-gray-400",
+    brand: "bg-brand-50 text-brand-500 dark:bg-white/[0.06] dark:text-gray-200",
+    success: "bg-success-50 text-success-600 dark:bg-white/[0.06] dark:text-gray-200",
+    orange: "bg-orange-50 text-orange-500 dark:bg-white/[0.06] dark:text-gray-200",
+    pink: "bg-pink-50 text-theme-pink-500 dark:bg-white/[0.06] dark:text-gray-200",
+    purple: "bg-violet-50 text-theme-purple-500 dark:bg-white/[0.06] dark:text-gray-200",
+    gray: "bg-gray-100 text-gray-600 dark:bg-white/[0.06] dark:text-gray-200",
   };
   return (
     <div className="lf-card flex h-full flex-col p-5 md:p-6">

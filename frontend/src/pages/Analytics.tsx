@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "@/lib/api";
+import { useChartColors } from "@/hooks/use-chart-colors";
 import { BANDS, LEAD_STATUSES, WEBSITE_STATUS } from "@/lib/constants";
 import { dt, money, num } from "@/lib/format";
 import type { LeadStatus, WebsiteStatus } from "@/lib/types";
@@ -47,6 +48,7 @@ function Empty({ text }: { text: string }) {
 
 export default function Analytics() {
   const [days, setDays] = useState("90");
+  const c = useChartColors();
   const { data, isLoading, error, refetch } = useQuery({ queryKey: ["analytics", Number(days)], queryFn: () => api.get<AnalyticsData>("/analytics", { days }) });
   if (isLoading) return <Loading />;
   if (error || !data) return <ErrorState error={error} onRetry={refetch} />;
@@ -104,15 +106,15 @@ export default function Analytics() {
               <ResponsiveContainer>
                 <AreaChart data={series} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
                   <defs>
-                    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#465fff" stopOpacity={0.25} /><stop offset="100%" stopColor="#465fff" stopOpacity={0} /></linearGradient>
-                    <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#9cb9ff" stopOpacity={0.3} /><stop offset="100%" stopColor="#9cb9ff" stopOpacity={0} /></linearGradient>
+                    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={c.primary} stopOpacity={0.25} /><stop offset="100%" stopColor={c.primary} stopOpacity={0} /></linearGradient>
+                    <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={c.secondary} stopOpacity={0.3} /><stop offset="100%" stopColor={c.secondary} stopOpacity={0} /></linearGradient>
                   </defs>
                   <CartesianGrid vertical={false} stroke="currentColor" className="text-gray-100 dark:text-gray-800" />
                   <XAxis dataKey="label" {...axis} minTickGap={30} />
                   <YAxis {...axis} allowDecimals={false} />
                   <Tooltip content={<Tip />} />
-                  <Area type="monotone" dataKey="discovered" name="Discovered" stroke="#9cb9ff" strokeWidth={2} fill="url(#g2)" />
-                  <Area type="monotone" dataKey="leads" name="Leads saved" stroke="#465fff" strokeWidth={2} fill="url(#g1)" />
+                  <Area type="monotone" dataKey="discovered" name="Discovered" stroke={c.secondary} strokeWidth={2} fill="url(#g2)" />
+                  <Area type="monotone" dataKey="leads" name="Leads saved" stroke={c.primary} strokeWidth={2} fill="url(#g1)" />
                 </AreaChart>
               </ResponsiveContainer>
             )}
@@ -146,8 +148,8 @@ export default function Analytics() {
                   <CartesianGrid vertical={false} stroke="currentColor" className="text-gray-100 dark:text-gray-800" />
                   <XAxis dataKey="label" {...axis} minTickGap={30} />
                   <YAxis {...axis} tickFormatter={(v) => new Intl.NumberFormat(undefined, { notation: "compact" }).format(v)} />
-                  <Tooltip cursor={{ fill: "rgba(70,95,255,0.06)" }} content={<Tip money />} />
-                  <Bar dataKey="revenue" name="Revenue" fill="#465fff" radius={[4, 4, 0, 0]} />
+                  <Tooltip cursor={{ fill: c.dark ? "rgba(255,255,255,0.05)" : "rgba(70,95,255,0.06)" }} content={<Tip money />} />
+                  <Bar dataKey="revenue" name="Revenue" fill={c.primary} radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -205,9 +207,9 @@ export default function Analytics() {
                   <CartesianGrid vertical={false} stroke="currentColor" className="text-gray-100 dark:text-gray-800" />
                   <XAxis dataKey="name" {...axis} />
                   <YAxis {...axis} allowDecimals={false} />
-                  <Tooltip cursor={{ fill: "rgba(70,95,255,0.06)" }} content={<Tip />} />
+                  <Tooltip cursor={{ fill: c.dark ? "rgba(255,255,255,0.05)" : "rgba(70,95,255,0.06)" }} content={<Tip />} />
                   <Bar dataKey="value" name="Businesses" radius={[4, 4, 0, 0]}>
-                    {bands.map((b) => <Cell key={b.name} fill={b.fill} />)}
+                    {bands.map((b) => <Cell key={b.name} fill={c.dark && b.fill === "#465fff" ? c.primary : b.fill} />)}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
