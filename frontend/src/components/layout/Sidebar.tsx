@@ -2,27 +2,24 @@ import { useEffect, type ComponentType } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Activity,
   BarChart3,
   Bell,
-  Bookmark,
-  CalendarClock,
+  Briefcase,
+  Building2,
   CalendarDays,
+  CalendarOff,
   ClipboardCheck,
-  Columns3,
-  Contact,
-  FileSearch,
+  Clock,
   LayoutGrid,
-  Mail,
-  Map as MapIcon,
-  Search,
   Settings,
+  Sparkles,
+  Target,
   UsersRound,
+  Wallet,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useMe } from "@/hooks/use-auth";
 import { initials } from "@/lib/format";
-import type { Paged } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSidebar } from "./sidebar-context";
@@ -30,7 +27,7 @@ import { Logo } from "./Logo";
 
 type Count = { value: number; tone: "gray" | "brand" | "red" };
 type NavItem = { name: string; path: string; icon: ComponentType<{ className?: string }>; isNew?: boolean; count?: (c: Counts) => Count | null };
-type Counts = { leads: number; openTasks: number; overdueTasks: number; overdueFollowUps: number; pendingFollowUps: number; unread: number };
+type Counts = { employees: number; pendingLeave: number; unmarked: number; candidates: number; unread: number };
 
 const SECTIONS: { title: string; items: NavItem[] }[] = [
   {
@@ -41,45 +38,31 @@ const SECTIONS: { title: string; items: NavItem[] }[] = [
     ],
   },
   {
-    title: "Discovery",
+    title: "People",
     items: [
-      { name: "Search Businesses", path: "/discover", icon: Search },
-      { name: "Map Explorer", path: "/map", icon: MapIcon, isNew: true },
-      { name: "Saved Searches", path: "/saved-searches", icon: Bookmark },
+      { name: "Employees", path: "/employees", icon: UsersRound, count: (c) => (c.employees ? { value: c.employees, tone: "gray" } : null) },
+      { name: "Departments", path: "/departments", icon: Building2 },
     ],
   },
   {
-    title: "Sales",
+    title: "Time",
     items: [
-      { name: "Leads", path: "/leads", icon: UsersRound, count: (c) => (c.leads ? { value: c.leads, tone: "gray" } : null) },
-      { name: "Pipeline", path: "/pipeline", icon: Columns3 },
-    ],
-  },
-  {
-    title: "CRM",
-    items: [
-      { name: "Contacts", path: "/contacts", icon: Contact },
-      { name: "Activities", path: "/activities", icon: Activity },
-      {
-        name: "Follow-ups",
-        path: "/follow-ups",
-        icon: CalendarClock,
-        count: (c) => (c.overdueFollowUps ? { value: c.overdueFollowUps, tone: "red" } : c.pendingFollowUps ? { value: c.pendingFollowUps, tone: "brand" } : null),
-      },
-      {
-        name: "Tasks",
-        path: "/tasks",
-        icon: ClipboardCheck,
-        count: (c) => (c.overdueTasks ? { value: c.overdueTasks, tone: "red" } : c.openTasks ? { value: c.openTasks, tone: "brand" } : null),
-      },
+      { name: "Attendance", path: "/attendance", icon: Clock, count: (c) => (c.unmarked ? { value: c.unmarked, tone: "brand" } : null) },
+      { name: "Leave", path: "/leave", icon: CalendarOff, count: (c) => (c.pendingLeave ? { value: c.pendingLeave, tone: "red" } : null) },
+      { name: "Holidays", path: "/holidays", icon: Sparkles },
       { name: "Calendar", path: "/calendar", icon: CalendarDays },
     ],
   },
   {
-    title: "Tools",
+    title: "Payroll",
+    items: [{ name: "Payroll", path: "/payroll", icon: Wallet }],
+  },
+  {
+    title: "Talent",
     items: [
-      { name: "Website Audit", path: "/audit", icon: FileSearch, isNew: true },
-      { name: "Email Templates", path: "/templates", icon: Mail },
+      { name: "Job Openings", path: "/recruitment/jobs", icon: Briefcase },
+      { name: "Candidates", path: "/recruitment/candidates", icon: ClipboardCheck, count: (c) => (c.candidates ? { value: c.candidates, tone: "brand" } : null), isNew: true },
+      { name: "Performance", path: "/performance", icon: Target },
     ],
   },
   {
@@ -98,18 +81,10 @@ function isActive(pathname: string, path: string) {
 
 /** Live counts shown next to menu items. Query keys sit under existing prefixes so mutations refresh them. */
 function useCounts(): Counts {
-  const leads = useQuery({ queryKey: ["leads", "nav"], queryFn: () => api.get<Paged<unknown>>("/leads", { limit: 1 }) });
-  const tasks = useQuery({ queryKey: ["tasks", "nav"], queryFn: () => api.get<{ counts: Record<string, number> }>("/tasks", { limit: 1 }) });
-  const fu = useQuery({ queryKey: ["follow-ups", "nav"], queryFn: () => api.get<{ counts: Record<string, number> }>("/follow-ups", { limit: 1 }) });
+  const dash = useQuery({ queryKey: ["dashboard", "nav"], queryFn: () => api.get<{ kpi: Record<string, number> }>("/dashboard") });
   const notes = useQuery({ queryKey: ["notifications"], queryFn: () => api.get<{ unread: number }>("/notifications") });
-  return {
-    leads: leads.data?.total ?? 0,
-    openTasks: (tasks.data?.counts.todo ?? 0) + (tasks.data?.counts.in_progress ?? 0),
-    overdueTasks: tasks.data?.counts.overdue ?? 0,
-    overdueFollowUps: fu.data?.counts.overdue ?? 0,
-    pendingFollowUps: fu.data?.counts.pending ?? 0,
-    unread: notes.data?.unread ?? 0,
-  };
+  const k = dash.data?.kpi;
+  return { employees: k?.headcount ?? 0, pendingLeave: k?.pending_leave ?? 0, unmarked: k?.not_marked_today ?? 0, candidates: k?.candidates_active ?? 0, unread: notes.data?.unread ?? 0 };
 }
 
 const COUNT_TONE = {
@@ -133,7 +108,7 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "fixed left-0 top-0 z-50 flex h-screen flex-col border-r border-gray-200 bg-white text-gray-900 transition-[width,transform] duration-300 ease-in-out dark:border-gray-800 dark:bg-gray-900",
+        "fixed left-0 top-0 z-50 flex h-screen flex-col print:hidden border-r border-gray-200 bg-white text-gray-900 transition-[width,transform] duration-300 ease-in-out dark:border-gray-800 dark:bg-gray-900",
         wide ? "w-[290px]" : "w-[90px]",
         mobileOpen ? "translate-x-0 shadow-theme-lg" : "-translate-x-full lg:translate-x-0",
       )}
@@ -211,7 +186,7 @@ export function Sidebar() {
 
       <div className={cn("shrink-0 border-t border-gray-100 p-4 dark:border-gray-800", !wide && "lg:px-3")}>
         <Link
-          to="/settings?tab=workspace"
+          to="/settings?tab=company"
           className={cn("flex items-center gap-3 rounded-xl bg-gray-50 p-2.5 transition-colors hover:bg-gray-100 dark:bg-white/[0.03] dark:hover:bg-white/[0.06]", !wide && "lg:justify-center lg:bg-transparent lg:p-1")}
           title={me.workspace.name}
         >
@@ -221,7 +196,7 @@ export function Sidebar() {
           {wide && (
             <span className="min-w-0 flex-1">
               <span className="block truncate text-theme-sm font-semibold text-gray-800 dark:text-white/90">{me.workspace.name}</span>
-              <span className="block truncate text-theme-xs capitalize text-gray-500 dark:text-gray-400">Free plan · {me.workspace.role}</span>
+              <span className="block truncate text-theme-xs capitalize text-gray-500 dark:text-gray-400">Company · {me.workspace.role}</span>
             </span>
           )}
         </Link>

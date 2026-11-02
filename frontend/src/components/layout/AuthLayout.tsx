@@ -13,7 +13,7 @@ export function AuthLayout({ title, subtitle, children, footer }: { title: strin
           <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center py-10">
             <Link to="/" className="mb-8 flex items-center gap-2.5 lg:hidden">
               <LogoMark />
-              <span className="text-xl font-semibold text-gray-900 dark:text-white">LeadForge</span>
+              <span className="text-xl font-semibold text-gray-900 dark:text-white">Hello<span className="text-brand-500">HR</span></span>
             </Link>
             <div className="mb-5 sm:mb-8">
               <h1 className="mb-2 text-title-sm font-semibold text-gray-800 dark:text-white/90">{title}</h1>
@@ -39,10 +39,10 @@ export function AuthLayout({ title, subtitle, children, footer }: { title: strin
             <div className="flex max-w-xs flex-col items-center">
               <div className="mb-4 flex items-center gap-3">
                 <LogoMark className="size-11" />
-                <span className="text-3xl font-semibold text-white">LeadForge</span>
+                <span className="text-3xl font-semibold text-white">HelloHR</span>
               </div>
               <p className="text-center text-gray-400 dark:text-white/60">
-                Discover local businesses on OpenStreetMap, spot the ones that need a better web presence, and manage every deal in one CRM.
+                People, attendance, leave, payroll, hiring and performance — everything your HR team needs, in one place.
               </p>
             </div>
           </div>

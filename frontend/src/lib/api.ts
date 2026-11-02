@@ -63,7 +63,7 @@ async function request<T>(method: string, path: string, body?: unknown, query?: 
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    throw new ApiError(0, "Cannot reach the LeadForge API. Is Apache (XAMPP) running?");
+    throw new ApiError(0, "Cannot reach the HelloHR API.");
   }
   let json: any = null;
   const text = await res.text();

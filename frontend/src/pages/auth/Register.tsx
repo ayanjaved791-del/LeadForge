@@ -40,7 +40,7 @@ export default function Register() {
   return (
     <AuthLayout
       title="Sign Up"
-      subtitle="Create your free LeadForge workspace."
+      subtitle="Create your free HelloHR account for your company."
       footer={
         <>
           Already have an account?{" "}
@@ -56,8 +56,8 @@ export default function Register() {
           <Field label="Full name *" error={fields.name}>
             <TextInput value={f.name} onChange={set("name")} placeholder="Your name" autoComplete="name" required invalid={!!fields.name} />
           </Field>
-          <Field label="Workspace" error={fields.workspace}>
-            <TextInput value={f.workspace} onChange={set("workspace")} placeholder="Company or team" />
+          <Field label="Company" error={fields.workspace}>
+            <TextInput value={f.workspace} onChange={set("workspace")} placeholder="Company name" />
           </Field>
         </div>
         <Field label="Email *" error={fields.email}>

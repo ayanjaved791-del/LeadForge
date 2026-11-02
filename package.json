@@ -1,7 +1,7 @@
 {
-  "name": "leadforge",
+  "name": "hellohr",
   "private": true,
-  "description": "LeadForge — business lead discovery & CRM (frontend-only edition; React app in ./frontend)",
+  "description": "HelloHR — human resource management (React app in ./frontend)",
   "scripts": {
     "install:frontend": "npm --prefix frontend ci",
     "build": "npm --prefix frontend run build",

@@ -1,18 +1,11 @@
-// In-browser implementation of the LeadForge REST API (frontend-only edition).
-// Mirrors the PHP API's routes and response shapes so pages work unchanged.
+// HelloHR — in-browser implementation of the app's REST API.
+// Every route returns the same shapes a server API would, and every record is scoped to the
+// signed-in company (workspace). Data is persisted in localStorage via ./store.
 import { ApiError } from "../api";
-import { db, getSession, nowIso, save, setSession, uuid, type Row } from "./store";
-import * as osm from "./osm";
-import * as scoring from "./scoring";
-import * as web from "./web";
+import { db, getSession, nowIso, save, setSession, uuid, type Row, type Table } from "./store";
 
 type Q = Record<string, string | undefined>;
 type Handler = (ctx: { body: any; query: Q; params: Record<string, string> }) => unknown | Promise<unknown>;
-
-const LIMITS: Record<string, number> = { discovery_search: 300, website_check: 2000, website_audit: 300, lead_export: 100 };
-const STATUSES = ["new", "contacted", "interested", "qualified", "proposal_sent", "negotiation", "won", "lost"];
-const PRIORITIES = ["low", "medium", "high", "urgent"];
-const WEBSITE_LABELS: Record<string, string> = { available: "Website Available", no_website: "No Website Found", inactive: "Website Inactive", needs_review: "Needs Review", unknown: "Unknown" };
 
 // ------------------------------------------------------------------ helpers
 const fail = (status: number, message: string, fields: Record<string, string> = {}): never => {
@@ -20,16 +13,39 @@ const fail = (status: number, message: string, fields: Record<string, string> = 
 };
 const invalid = (fields: Record<string, string>): never => fail(422, "Validation failed", fields);
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const str = (v: unknown, max = 500) => (typeof v === "string" ? v.trim().slice(0, max) : v === null || v === undefined ? null : String(v).slice(0, max)) || null;
+const num = (v: unknown, min = 0, max = 1e9) => Math.min(max, Math.max(min, Number(v) || 0));
+const money = (v: number) => Math.round(v * 100) / 100;
 const iso = (v: unknown) => {
-  if (v === null || v === undefined || v === "") return null;
+  if (!v) return null;
   const d = new Date(String(v));
   return isNaN(d.getTime()) ? null : d.toISOString();
 };
-const now = () => Date.now();
-const isPast = (v: string | null | undefined) => !!v && new Date(v).getTime() < now();
-const sameDay = (a: string, b = new Date()) => new Date(a).toDateString() === b.toDateString();
+const dateOnly = (v: unknown, field: string, required = false) => {
+  if (v === null || v === undefined || v === "") return required ? invalid({ [field]: "This field is required." }) : null;
+  if (typeof v !== "string" || !DATE.test(v)) invalid({ [field]: "Enter a valid date." });
+  return v as string;
+};
 const like = (hay: unknown, q: string) => String(hay ?? "").toLowerCase().includes(q.toLowerCase());
+
+/** Local calendar date helpers ("YYYY-MM-DD", in the user's timezone). */
+const dkey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const parseKey = (k: string) => {
+  const [y, m, d] = k.split("-").map(Number);
+  return new Date(y, m - 1, d);
+};
+const today = () => dkey(new Date());
+const addDays = (k: string, n: number) => {
+  const d = parseKey(k);
+  d.setDate(d.getDate() + n);
+  return dkey(d);
+};
+const monthBounds = (period: string) => {
+  const [y, m] = period.split("-").map(Number);
+  return { start: dkey(new Date(y, m - 1, 1)), end: dkey(new Date(y, m, 0)) };
+};
 
 function auth() {
   const s = getSession();
@@ -38,121 +54,147 @@ function auth() {
   let member = db().members.find((m) => m.workspace_id === s!.workspace_id && m.user_id === user!.id);
   if (!member) {
     member = db().members.find((m) => m.user_id === user!.id);
-    if (!member) fail(403, "You are not a member of any workspace.");
+    if (!member) fail(403, "You are not a member of any company.");
     setSession({ user_id: user!.id, workspace_id: member!.workspace_id });
   }
   return { user: user!, wsId: member!.workspace_id as string, role: member!.role as string };
 }
 const ws = () => auth().wsId;
-const rows = (t: keyof ReturnType<typeof db>) => (db()[t] as Row[]).filter((r) => r.workspace_id === ws());
-function find(t: keyof ReturnType<typeof db>, id: string, label = "Record"): Row {
-  const r = (db()[t] as Row[]).find((x) => x.id === id && x.workspace_id === ws());
+const company = () => db().workspaces.find((w) => w.id === ws())!;
+const rows = (t: Table) => db()[t].filter((r) => r.workspace_id === ws());
+function find(t: Table, id: string, label = "Record"): Row {
+  const r = db()[t].find((x) => x.id === id && x.workspace_id === ws());
   if (!r) fail(404, `${label} not found`);
   return r!;
 }
-function remove(t: keyof ReturnType<typeof db>, pred: (r: Row) => boolean) {
-  (db() as any)[t] = (db()[t] as Row[]).filter((r) => !pred(r));
-}
+const remove = (t: Table, pred: (r: Row) => boolean) => {
+  db()[t] = db()[t].filter((r) => !pred(r));
+};
 function page<T>(items: T[], q: Q, def = 50) {
-  const limit = Math.max(1, Math.min(500, Number(q.limit) || def));
+  const limit = Math.max(1, Math.min(1000, Number(q.limit) || def));
   const p = Math.max(1, Number(q.page) || 1);
   return { total: items.length, page: p, limit, items: items.slice((p - 1) * limit, p * limit) };
 }
-function requireRole(...roles: string[]) {
+const requireRole = (...roles: string[]) => {
   if (!roles.includes(auth().role)) fail(403, "Your role does not allow this action.");
-}
-const userName = (id: string | null) => db().users.find((u) => u.id === id)?.name ?? null;
-
-// usage quotas (free plan)
-const monthStart = () => {
-  const d = new Date();
-  return new Date(d.getFullYear(), d.getMonth(), 1).getTime();
 };
-const used = (metric: string) => rows("usage").filter((u) => u.metric === metric && new Date(u.at).getTime() >= monthStart()).length;
-function consume(metric: string) {
-  if (used(metric) + 1 > LIMITS[metric]) fail(402, `Monthly free-plan limit reached for ${metric.replace(/_/g, " ")}. It resets on the 1st of next month.`);
-  db().usage.push({ id: uuid(), workspace_id: ws(), user_id: auth().user.id, metric, at: nowIso() });
-}
-const usageSummary = () => Object.keys(LIMITS).map((metric) => ({ metric, used: used(metric), limit: LIMITS[metric] }));
-
-// password hashing (PBKDF2-SHA256 via Web Crypto)
-async function hashPassword(password: string, salt?: string) {
-  const s = salt ?? [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode(s), iterations: 150_000 }, key, 256);
-  return { salt: s, hash: [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("") };
-}
-const strongPassword = (pw: string) => {
-  if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) invalid({ password: "Use at least 8 characters with letters and numbers." });
+const notify = (title: string, body: string | null, link: string | null, type = "info") => {
+  for (const m of rows("members")) db().notifications.push({ id: uuid(), workspace_id: ws(), user_id: m.user_id, type, title, body, link, read_at: null, created_at: nowIso() });
 };
+
+// ------------------------------------------------------------------ company calendar
+const settings = () => ({ work_start: "09:00", late_after_minutes: 15, work_days: [1, 2, 3, 4, 5], ...(company().settings ?? {}) });
+const holidayOn = (k: string) => rows("holidays").find((h) => h.date === k) ?? null;
+const isWorkingDay = (k: string) => settings().work_days.includes(parseKey(k).getDay()) && !holidayOn(k);
+function workingDays(start: string, end: string) {
+  let n = 0;
+  for (let k = start; k <= end; k = addDays(k, 1)) if (isWorkingDay(k)) n++;
+  return n;
+}
+const overlap = (aStart: string, aEnd: string, bStart: string, bEnd: string) => {
+  const s = aStart > bStart ? aStart : bStart;
+  const e = aEnd < bEnd ? aEnd : bEnd;
+  return s <= e ? { start: s, end: e } : null;
+};
+const leaveOn = (employeeId: string, k: string) =>
+  rows("leave_requests").find((l) => l.employee_id === employeeId && l.status === "approved" && l.start_date <= k && l.end_date >= k) ?? null;
+const employedOn = (e: Row, k: string) => e.join_date <= k && (!e.termination_date || e.termination_date >= k);
 
 // ------------------------------------------------------------------ formatting
-const overrides = (wsId: string): Record<string, number> => db().workspaces.find((w) => w.id === wsId)?.settings?.scoring ?? {};
-const latestAudit = (businessId: string) =>
-  db().audits.filter((a) => a.business_id === businessId).sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null;
-
-function rescore(b: Row) {
-  const s = scoring.score(b, latestAudit(b.id), overrides(b.workspace_id));
-  b.opportunity_score = s.score;
-  b.score_breakdown = s.items;
-}
-
-function formatBusiness(b: Row) {
-  const lead = db().leads.find((l) => l.business_id === b.id && l.workspace_id === b.workspace_id);
-  const address = [b.street, b.city, b.postcode, b.country].filter(Boolean).join(", ");
+const fullName = (e: Row | undefined | null) => (e ? [e.first_name, e.last_name].filter(Boolean).join(" ") : null);
+const deptName = (id: string | null) => (id ? rows("departments").find((d) => d.id === id)?.name ?? null : null);
+const leaveTypeName = (id: string) => rows("leave_types").find((t) => t.id === id)?.name ?? "Leave";
+function formatEmployee(e: Row): Row {
   return {
-    id: b.id, osm_type: b.osm_type, osm_id: b.osm_id, osm_url: `https://www.openstreetmap.org/${b.osm_type}/${b.osm_id}`,
-    name: b.name, category: b.category, category_label: osm.CATEGORIES[b.category]?.label ?? b.category,
-    address: address || null, street: b.street, city: b.city, postcode: b.postcode, country: b.country,
-    phone: b.phone, website: b.website, email: b.email, socials: b.socials ?? {}, opening_hours: b.opening_hours,
-    lat: b.lat, lng: b.lng, website_status: b.website_status, website_status_label: WEBSITE_LABELS[b.website_status] ?? "Unknown",
-    website_check_note: b.website_check_note ?? null, website_http_status: null, website_checked_at: b.website_checked_at ?? null,
-    score: b.opportunity_score, band: scoring.band(b.opportunity_score), score_breakdown: b.score_breakdown ?? [],
-    lead_id: lead?.id ?? null, discovered_at: b.discovered_at,
+    ...e,
+    full_name: fullName(e),
+    department_name: deptName(e.department_id),
+    manager_name: e.manager_id ? fullName(rows("employees").find((m) => m.id === e.manager_id)) : null,
+    on_leave_today: !!leaveOn(e.id, today()),
   };
 }
-
-function formatLead(l: Row): Row {
-  const b = l.business_id ? db().businesses.find((x) => x.id === l.business_id) : null;
-  const pending = db().follow_ups.filter((f) => f.lead_id === l.id && f.status === "pending").map((f) => f.due_at).sort();
-  const acts = db().activities
-    .filter((a) => a.lead_id === l.id && !["system", "status_change"].includes(a.type) && new Date(a.occurred_at).getTime() <= now())
-    .map((a) => a.occurred_at)
-    .sort();
-  return {
-    ...l,
-    opportunity_score: b ? b.opportunity_score : null,
-    website_status: b ? b.website_status : null,
-    lat: b ? b.lat : null,
-    lng: b ? b.lng : null,
-    next_follow_up_at: pending[0] ?? null,
-    last_activity_at: acts[acts.length - 1] ?? null,
-    tags: l.tags ?? [],
-  };
-}
-
-const formatActivity = (a: Row) => {
-  const c = a.contact_id ? db().contacts.find((x) => x.id === a.contact_id) : null;
-  return { ...a, author: userName(a.user_id), contact_name: c ? [c.first_name, c.last_name].filter(Boolean).join(" ") : null, lead_name: db().leads.find((l) => l.id === a.lead_id)?.name };
+const formatLeave = (l: Row) => {
+  const e = rows("employees").find((x) => x.id === l.employee_id);
+  const t = rows("leave_types").find((x) => x.id === l.leave_type_id);
+  return { ...l, employee_name: fullName(e), department_name: e ? deptName(e.department_id) : null, leave_type: t?.name ?? "Leave", paid: t?.paid ?? true };
 };
+const logEvent = (employeeId: string, type: string, text: string) =>
+  db().employee_events.push({ id: uuid(), workspace_id: ws(), employee_id: employeeId, type, text, at: nowIso() });
 
-function logActivity(leadId: string, data: Row) {
-  db().activities.push({ id: uuid(), workspace_id: ws(), lead_id: leadId, user_id: auth().user.id, contact_id: null, direction: null, subject: null, body: null, outcome: null, duration_minutes: null, occurred_at: nowIso(), created_at: nowIso(), ...data });
-}
-const touchLead = (id: string | null) => {
-  const l = id && db().leads.find((x) => x.id === id);
-  if (l) l.updated_at = nowIso();
-};
-const statusLabel = (s: string) => s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-function applyStatus(lead: Row, next: string) {
-  if (next === lead.status) return;
-  lead.won_at = next === "won" ? lead.won_at ?? nowIso() : null;
-  lead.lost_at = next === "lost" ? lead.lost_at ?? nowIso() : null;
-  logActivity(lead.id, { type: "status_change", subject: "Status changed", body: `${statusLabel(lead.status)} → ${statusLabel(next)}` });
-  lead.status = next;
+function balances(employeeId: string, year: number) {
+  const ys = `${year}-01-01`;
+  const ye = `${year}-12-31`;
+  const reqs = rows("leave_requests").filter((l) => l.employee_id === employeeId && overlap(l.start_date, l.end_date, ys, ye));
+  return rows("leave_types")
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((t) => {
+      const days = (status: string) =>
+        reqs.filter((l) => l.leave_type_id === t.id && l.status === status).reduce((s, l) => {
+          const o = overlap(l.start_date, l.end_date, ys, ye)!;
+          return s + (l.half_day ? 0.5 : workingDays(o.start, o.end));
+        }, 0);
+      const used = days("approved");
+      const pending = days("pending");
+      return { leave_type_id: t.id, leave_type: t.name, allowance: t.days_per_year, used, pending, remaining: Math.max(0, t.days_per_year - used), paid: t.paid };
+    });
 }
 
-// ------------------------------------------------------------------ handlers
+// ------------------------------------------------------------------ input validation
+const EMP_TYPES = ["full_time", "part_time", "contract", "intern"];
+function employeeInput(body: any, existing?: Row) {
+  const out: Row = {};
+  const errors: Record<string, string> = {};
+  for (const k of ["first_name", "last_name", "email", "phone", "gender", "address", "job_title", "notes", "employee_code"]) if (k in body) out[k] = str(body[k], k === "notes" || k === "address" ? 2000 : 191);
+  if (!existing && !out.first_name) errors.first_name = "This field is required.";
+  if ("first_name" in body && !out.first_name) errors.first_name = "This field is required.";
+  if (out.email && !EMAIL.test(out.email)) errors.email = "Enter a valid email address.";
+  if (out.email && rows("employees").some((e) => e.email?.toLowerCase() === out.email.toLowerCase() && e.id !== existing?.id)) errors.email = "Another employee already uses this email.";
+  if (out.employee_code && rows("employees").some((e) => e.employee_code === out.employee_code && e.id !== existing?.id)) errors.employee_code = "This employee ID is already in use.";
+  for (const k of ["date_of_birth", "join_date", "probation_end", "termination_date"]) if (k in body) out[k] = dateOnly(body[k], k);
+  if (!existing && !out.join_date) errors.join_date = "This field is required.";
+  if ("employment_type" in body) EMP_TYPES.includes(body.employment_type) ? (out.employment_type = body.employment_type) : (errors.employment_type = "Invalid option selected.");
+  if ("status" in body) ["active", "probation", "terminated"].includes(body.status) ? (out.status = body.status) : (errors.status = "Invalid option selected.");
+  if ("department_id" in body) out.department_id = body.department_id ? find("departments", body.department_id, "Department").id : null;
+  if ("manager_id" in body) {
+    out.manager_id = body.manager_id ? find("employees", body.manager_id, "Manager").id : null;
+    if (existing && out.manager_id === existing.id) errors.manager_id = "An employee cannot manage themselves.";
+  }
+  if ("salary" in body) {
+    const s = body.salary ?? {};
+    const items = (arr: unknown) => (Array.isArray(arr) ? arr : []).map((i: any) => ({ name: str(i?.name, 80) ?? "", amount: money(num(i?.amount)) })).filter((i) => i.name && i.amount > 0).slice(0, 20);
+    out.salary = { basic: money(num(s.basic)), allowances: items(s.allowances), deductions: items(s.deductions), tax_rate: num(s.tax_rate, 0, 100) };
+  }
+  if ("bank" in body) out.bank = { bank_name: str(body.bank?.bank_name, 120), account_name: str(body.bank?.account_name, 120), account_number: str(body.bank?.account_number, 60) };
+  if ("emergency" in body) out.emergency = { name: str(body.emergency?.name, 120), phone: str(body.emergency?.phone, 40), relation: str(body.emergency?.relation, 60) };
+  const status = out.status ?? existing?.status;
+  if (status === "terminated" && !(out.termination_date ?? existing?.termination_date)) out.termination_date = today();
+  if (Object.keys(errors).length) invalid(errors);
+  return out;
+}
+function nextEmployeeCode() {
+  const nums = rows("employees").map((e) => Number(String(e.employee_code ?? "").replace(/\D/g, ""))).filter((n) => !isNaN(n));
+  return `EMP-${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(4, "0")}`;
+}
+
+// ------------------------------------------------------------------ payroll
+function computePayslip(p: Row) {
+  const allowances = (p.allowances as Row[]).reduce((s, a) => s + a.amount, 0);
+  const fixed = (p.deductions as Row[]).reduce((s, d) => s + d.amount, 0);
+  const perDay = p.working_days > 0 ? p.basic / p.working_days : 0;
+  p.unpaid_deduction = money(Math.min(p.basic, perDay * p.unpaid_days));
+  p.gross = money(p.basic + allowances + p.bonus);
+  p.tax = money(Math.max(0, p.gross - p.unpaid_deduction) * (p.tax_rate / 100));
+  p.total_deductions = money(fixed + p.unpaid_deduction + p.tax);
+  p.net = money(Math.max(0, p.gross - p.total_deductions));
+  return p;
+}
+function runTotals(run: Row) {
+  const slips = rows("payslips").filter((p) => p.run_id === run.id);
+  return { ...run, employees: slips.length, gross: money(slips.reduce((s, p) => s + p.gross, 0)), deductions: money(slips.reduce((s, p) => s + p.total_deductions, 0)), net: money(slips.reduce((s, p) => s + p.net, 0)) };
+}
+const formatPayslip = (p: Row) => ({ ...p, run_status: rows("payroll_runs").find((r) => r.id === p.run_id)?.status });
+
+// ------------------------------------------------------------------ auth & account
 const me = () => {
   const { user, wsId, role } = auth();
   const w = db().workspaces.find((x) => x.id === wsId)!;
@@ -164,284 +206,190 @@ const me = () => {
     csrf: "local",
   };
 };
-
-async function register({ body }: { body: any }) {
-  const name = str(body.name, 120);
-  const email = (str(body.email, 191) ?? "").toLowerCase();
-  const password = String(body.password ?? "");
-  const errors: Record<string, string> = {};
-  if (!name || name.length < 2) errors.name = "This field is required.";
-  if (!EMAIL.test(email)) errors.email = "Enter a valid email address.";
-  if (Object.keys(errors).length) invalid(errors);
-  strongPassword(password);
-  if (db().users.some((u) => u.email === email)) invalid({ email: "An account with this email already exists in this browser." });
-  const { salt, hash } = await hashPassword(password);
-  const uid = uuid();
-  const wid = uuid();
-  const t = nowIso();
-  db().users.push({ id: uid, email, name, password_hash: hash, salt, email_verified_at: null, created_at: t, last_login_at: t, job_title: null, company: null, phone: null, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", currency: "USD", default_city: null, default_country: null, onboarded_at: null });
-  const wsName = str(body.workspace, 120) || `${name}'s Workspace`;
-  db().workspaces.push({ id: wid, name: wsName, slug: wsName.toLowerCase().replace(/[^a-z0-9]+/g, "-"), owner_id: uid, settings: {}, created_at: t });
-  db().members.push({ id: uuid(), workspace_id: wid, user_id: uid, role: "owner", created_at: t });
-  save();
-  setSession({ user_id: uid, workspace_id: wid });
-  return { user_id: uid };
+async function hashPassword(password: string, salt?: string) {
+  const s = salt ?? [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode(s), iterations: 150_000 }, key, 256);
+  return { salt: s, hash: [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("") };
 }
+const strongPassword = (pw: string) => {
+  if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) invalid({ password: "Use at least 8 characters with letters and numbers." });
+};
+const DEFAULT_LEAVE_TYPES = [
+  { name: "Annual leave", days_per_year: 14, paid: true },
+  { name: "Sick leave", days_per_year: 10, paid: true },
+  { name: "Unpaid leave", days_per_year: 30, paid: false },
+];
 
-async function login({ body }: { body: any }) {
-  const email = String(body.email ?? "").trim().toLowerCase();
-  const user = db().users.find((u) => u.email === email);
-  const check = await hashPassword(String(body.password ?? ""), user?.salt ?? "x");
-  if (!user || check.hash !== user.password_hash) fail(401, "Incorrect email or password.");
-  user!.last_login_at = nowIso();
-  save();
-  const m = db().members.find((x) => x.user_id === user!.id);
-  setSession({ user_id: user!.id, workspace_id: m?.workspace_id });
-  return {};
+// ------------------------------------------------------------------ dashboard & analytics
+function headcountAt(k: string) {
+  return rows("employees").filter((e) => employedOn(e, k)).length;
 }
-
-function businessList(q: Q) {
-  let items = rows("businesses");
-  if (q.q) items = items.filter((b) => like(b.name, q.q!) || like(b.city, q.q!) || like(b.street, q.q!));
-  if (q.category) items = items.filter((b) => b.category === q.category);
-  if (q.website_status) items = items.filter((b) => b.website_status === q.website_status);
-  if (q.min_score) items = items.filter((b) => b.opportunity_score >= Number(q.min_score));
-  const saved = new Set(rows("leads").map((l) => l.business_id));
-  if (q.saved === "1") items = items.filter((b) => saved.has(b.id));
-  if (q.saved === "0") items = items.filter((b) => !saved.has(b.id));
-  items.sort(q.sort === "name" ? (a, b) => a.name.localeCompare(b.name) : q.sort === "recent" ? (a, b) => b.discovered_at.localeCompare(a.discovered_at) : (a, b) => b.opportunity_score - a.opportunity_score || a.name.localeCompare(b.name));
-  const p = page(items, q, 50);
-  return { ...p, items: p.items.map(formatBusiness) };
-}
-
-function showBusiness(id: string) {
-  const b = find("businesses", id, "Business");
-  const a = latestAudit(b.id);
-  return { ...formatBusiness(b), latest_audit: a ? { ...a } : null };
-}
-
-async function checkBusiness(b: Row) {
-  if (!b.website) {
-    const init = web.initial(null, b.socials);
-    Object.assign(b, { website_status: init.status, website_check_note: init.note, website_checked_at: nowIso() });
-  } else {
-    consume("website_check");
-    const r = await web.check(b.website);
-    Object.assign(b, { website_status: r.status, website_check_note: r.note, website_checked_at: nowIso() });
-  }
-  rescore(b);
-}
-
-function leadFilters(q: Q) {
-  let items = rows("leads");
-  if (q.q) items = items.filter((l) => like(l.name, q.q!) || like(l.email, q.q!) || like(l.phone, q.q!) || like(l.address, q.q!));
-  if (q.status) items = items.filter((l) => l.status === q.status);
-  if (q.priority) items = items.filter((l) => l.priority === q.priority);
-  if (q.category) items = items.filter((l) => l.category === q.category);
-  if (q.tag) items = items.filter((l) => (l.tags ?? []).includes(q.tag));
-  const fu = (l: Row, fn: (f: Row) => boolean) => db().follow_ups.some((f) => f.lead_id === l.id && f.status === "pending" && fn(f));
-  if (q.follow_up === "overdue") items = items.filter((l) => fu(l, (f) => isPast(f.due_at)));
-  if (q.follow_up === "upcoming") items = items.filter((l) => fu(l, (f) => !isPast(f.due_at)));
-  return items.map(formatLead);
-}
-
-function leadDetail(id: string) {
-  const l = find("leads", id, "Lead");
-  const b = l.business_id ? db().businesses.find((x) => x.id === l.business_id) : null;
-  const d = db();
-  return {
-    ...formatLead(l),
-    business: b ? formatBusiness(b) : null,
-    notes: d.notes.filter((n) => n.lead_id === id).sort((a, b) => b.created_at.localeCompare(a.created_at)).map((n) => ({ ...n, author: userName(n.user_id) })),
-    activities: d.activities.filter((a) => a.lead_id === id).sort((a, b) => b.occurred_at.localeCompare(a.occurred_at)).map(formatActivity),
-    follow_ups: d.follow_ups.filter((f) => f.lead_id === id).sort((a, b) => Number(b.status === "pending") - Number(a.status === "pending") || a.due_at.localeCompare(b.due_at)),
-    tasks: d.tasks.filter((t) => t.lead_id === id).sort((a, b) => Number(a.status === "done") - Number(b.status === "done") || String(a.due_at ?? "9").localeCompare(String(b.due_at ?? "9"))),
-    contacts: d.contacts.filter((c) => c.lead_id === id),
-    audits: d.audits.filter((a) => a.lead_id === id || (l.business_id && a.business_id === l.business_id)).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 10),
-  };
-}
-
-function leadInput(body: any, partial: boolean) {
-  const errors: Record<string, string> = {};
-  const out: Row = {};
-  for (const k of ["name", "category", "address", "phone", "email", "website", "lost_reason"]) if (k in body) out[k] = str(body[k], k === "name" ? 255 : 500);
-  if (!partial && !out.name && !body.business_id) errors.name = "This field is required.";
-  if ("name" in body && !out.name && partial) errors.name = "This field is required.";
-  if (out.email && !EMAIL.test(out.email)) errors.email = "Enter a valid email address.";
-  if (out.website && !/^https?:\/\/[^\s]+\.[^\s]+/i.test(out.website)) errors.website = "Enter a valid http(s) URL.";
-  if ("status" in body) STATUSES.includes(body.status) ? (out.status = body.status) : (errors.status = "Invalid option selected.");
-  if ("priority" in body) PRIORITIES.includes(body.priority) ? (out.priority = body.priority) : (errors.priority = "Invalid option selected.");
-  if ("deal_value" in body) {
-    const v = Number(body.deal_value);
-    isNaN(v) ? (errors.deal_value = "Must be a number.") : (out.deal_value = Math.max(0, v));
-  }
-  if (Object.keys(errors).length) invalid(errors);
-  return out;
-}
-const cleanTags = (tags: unknown) => [...new Map((Array.isArray(tags) ? tags : []).filter((t) => typeof t === "string" && t.trim()).map((t: string) => [t.trim().toLowerCase(), t.trim().slice(0, 50)])).values()].slice(0, 20);
-
-function csv(rowsIn: (string | number | null)[][]) {
-  return "﻿" + rowsIn.map((r) => r.map((v) => {
-    let s = String(v ?? "");
-    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  }).join(",")).join("\n");
-}
-
-function syncDue() {
-  const { user, wsId } = auth();
-  for (const f of db().follow_ups) {
-    if (f.workspace_id !== wsId || f.status !== "pending" || f.notified_at || !isPast(f.due_at)) continue;
-    const lead = db().leads.find((l) => l.id === f.lead_id);
-    db().notifications.push({ id: uuid(), workspace_id: wsId, user_id: user.id, type: "follow_up_due", title: `Follow-up due: ${lead?.name ?? "lead"}`, body: `${f.channel[0].toUpperCase()}${f.channel.slice(1)} follow-up is due.`, link: `/leads/${f.lead_id}`, read_at: null, created_at: nowIso() });
-    f.notified_at = nowIso();
-  }
-}
-
 function dashboard(q: Q) {
-  const leads = rows("leads");
+  const t = today();
   const year = Number(q.year) || new Date().getFullYear();
-  const t = now();
-  const DAY = 86400_000;
-  const within = (v: string | null, from: number, to = Infinity) => !!v && new Date(v).getTime() >= t - from && new Date(v).getTime() < t - (to === Infinity ? -1 : to);
-  const sum = (arr: Row[]) => arr.reduce((s, l) => s + Number(l.deal_value || 0), 0);
-  const won = leads.filter((l) => l.status === "won");
-  const lost = leads.filter((l) => l.status === "lost");
-  const kpi = {
-    total_leads: leads.length,
-    new_leads: leads.filter((l) => l.status === "new").length,
-    contacted: leads.filter((l) => l.status === "contacted").length,
-    qualified: leads.filter((l) => l.status === "qualified").length,
-    won: won.length,
-    lost: lost.length,
-    revenue: sum(won),
-    pipeline_value: sum(leads.filter((l) => !["won", "lost"].includes(l.status))),
-    leads_30d: leads.filter((l) => within(l.created_at, 30 * DAY)).length,
-    leads_prev_30d: leads.filter((l) => within(l.created_at, 60 * DAY, 30 * DAY)).length,
-    revenue_30d: sum(won.filter((l) => within(l.won_at, 30 * DAY))),
-    revenue_prev_30d: sum(won.filter((l) => within(l.won_at, 60 * DAY, 30 * DAY))),
-    conversion_rate: won.length + lost.length ? Math.round((won.length / (won.length + lost.length)) * 1000) / 10 : null,
-    win_rate_all: leads.length ? Math.round((won.length / leads.length) * 1000) / 10 : null,
-  };
-  const biz = rows("businesses");
-  const pend = rows("follow_ups").filter((f) => f.status === "pending");
-  const monthly = Array.from({ length: 12 }, (_, i) => ({ month: i + 1, leads: 0, won: 0, lost: 0, revenue: 0 }));
-  for (const l of leads) {
-    const c = new Date(l.created_at);
-    if (c.getFullYear() === year) monthly[c.getMonth()].leads++;
-    if (l.status === "won" && l.won_at && new Date(l.won_at).getFullYear() === year) {
-      monthly[new Date(l.won_at).getMonth()].won++;
-      monthly[new Date(l.won_at).getMonth()].revenue += Number(l.deal_value || 0);
-    }
-    if (l.status === "lost" && l.lost_at && new Date(l.lost_at).getFullYear() === year) monthly[new Date(l.lost_at).getMonth()].lost++;
-  }
-  const daily = Array.from({ length: 30 }, (_, i) => {
-    const d = new Date(t - (29 - i) * DAY);
-    const key = d.toISOString().slice(0, 10);
-    const dayLeads = leads.filter((l) => sameDay(l.created_at, d));
-    return { date: key, leads: dayLeads.length, value: sum(dayLeads) };
+  const emps = rows("employees");
+  const current = emps.filter((e) => employedOn(e, t));
+  const att = rows("attendance").filter((a) => a.date === t);
+  const onLeave = current.filter((e) => leaveOn(e.id, t));
+  const monthStart = t.slice(0, 8) + "01";
+  const monthly = Array.from({ length: 12 }, (_, i) => {
+    const { start, end } = monthBounds(`${year}-${String(i + 1).padStart(2, "0")}`);
+    return {
+      month: i + 1,
+      hires: emps.filter((e) => e.join_date >= start && e.join_date <= end).length,
+      exits: emps.filter((e) => e.termination_date && e.termination_date >= start && e.termination_date <= end).length,
+      headcount: end <= t || start <= t ? headcountAt(end < t ? end : t) : 0,
+    };
   });
-  const years = [...new Set([new Date().getFullYear(), ...leads.map((l) => new Date(l.created_at).getFullYear())])].sort((a, b) => b - a);
-  const w = db().workspaces.find((x) => x.id === ws())!;
+  // attendance for the last 14 working days
+  const trend: Row[] = [];
+  for (let k = t, guard = 0; trend.length < 14 && guard < 60; k = addDays(k, -1), guard++) {
+    if (!isWorkingDay(k)) continue;
+    const recs = rows("attendance").filter((a) => a.date === k);
+    trend.unshift({
+      date: k,
+      present: recs.filter((a) => ["present", "late", "remote", "half_day"].includes(a.status)).length,
+      absent: recs.filter((a) => a.status === "absent").length,
+      on_leave: rows("employees").filter((e) => employedOn(e, k) && leaveOn(e.id, k)).length,
+    });
+  }
+  const upcoming = (field: "date_of_birth" | "join_date") =>
+    current
+      .filter((e) => e[field])
+      .map((e) => {
+        const [, m, d] = String(e[field]).split("-");
+        let next = `${t.slice(0, 4)}-${m}-${d}`;
+        if (next < t) next = `${Number(t.slice(0, 4)) + 1}-${m}-${d}`;
+        const years = Number(next.slice(0, 4)) - Number(String(e[field]).slice(0, 4));
+        return { id: e.id, name: fullName(e), date: next, years };
+      })
+      .filter((x) => x.date <= addDays(t, 30) && (field === "date_of_birth" || x.years > 0))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  const lastRun = rows("payroll_runs").sort((a, b) => b.period.localeCompare(a.period))[0];
+  const openJobs = rows("jobs").filter((j) => j.status === "open");
   return {
-    kpi,
-    businesses: { total: biz.length, no_website: biz.filter((b) => b.website_status === "no_website").length, inactive: biz.filter((b) => b.website_status === "inactive").length, high_opportunity: biz.filter((b) => b.opportunity_score >= 50).length, d30: biz.filter((b) => within(b.discovered_at, 30 * DAY)).length },
-    follow_ups: { overdue: pend.filter((f) => isPast(f.due_at)).length, pending: pend.length, today: pend.filter((f) => sameDay(f.due_at)).length },
-    monthly, year, years, daily,
-    upcoming_follow_ups: [...pend].sort((a, b) => a.due_at.localeCompare(b.due_at)).slice(0, 5).map((f) => ({ ...f, lead_name: db().leads.find((l) => l.id === f.lead_id)?.name })),
-    recent_activity: rows("activities").filter((a) => a.type !== "system" && new Date(a.occurred_at).getTime() <= now()).sort((a, b) => b.occurred_at.localeCompare(a.occurred_at)).slice(0, 6).map((a) => {
-      const l = db().leads.find((x) => x.id === a.lead_id);
-      return { ...a, lead_name: l?.name, deal_value: Number(l?.deal_value ?? 0), status: l?.status };
-    }),
-    top_opportunities: [...biz].sort((a, b) => b.opportunity_score - a.opportunity_score || b.discovered_at.localeCompare(a.discovered_at)).slice(0, 5).map((b) => ({ id: b.id, name: b.name, category: b.category, category_label: osm.CATEGORIES[b.category]?.label ?? b.category, city: b.city, opportunity_score: b.opportunity_score, website_status: b.website_status, lead_id: formatBusiness(b).lead_id })),
-    workspace: { name: w.name, created_at: w.created_at, plan: "free", status: "active", members: rows("members").length },
-    usage: usageSummary(),
+    kpi: {
+      headcount: current.length,
+      new_hires_month: emps.filter((e) => e.join_date >= monthStart && e.join_date <= t).length,
+      exits_year: emps.filter((e) => e.termination_date && e.termination_date.startsWith(String(year))).length,
+      present_today: att.filter((a) => ["present", "late", "remote", "half_day"].includes(a.status)).length,
+      absent_today: att.filter((a) => a.status === "absent").length,
+      late_today: att.filter((a) => a.status === "late").length,
+      not_marked_today: isWorkingDay(t) ? current.filter((e) => !att.some((a) => a.employee_id === e.id) && !leaveOn(e.id, t)).length : 0,
+      on_leave_today: onLeave.length,
+      pending_leave: rows("leave_requests").filter((l) => l.status === "pending").length,
+      open_positions: openJobs.reduce((s, j) => s + Number(j.openings || 0), 0),
+      candidates_active: rows("candidates").filter((c) => !["hired", "rejected"].includes(c.stage)).length,
+      monthly_payroll: current.reduce((s, e) => s + (e.salary?.basic ?? 0) + (e.salary?.allowances ?? []).reduce((a: number, x: Row) => a + x.amount, 0), 0),
+      working_day: isWorkingDay(t),
+      holiday: holidayOn(t)?.name ?? null,
+    },
+    monthly,
+    year,
+    years: [...new Set([new Date().getFullYear(), ...emps.map((e) => Number(String(e.join_date).slice(0, 4)))])].sort((a, b) => b - a),
+    attendance_trend: trend,
+    departments: rows("departments").map((d) => ({ name: d.name, count: current.filter((e) => e.department_id === d.id).length })).concat(
+      current.some((e) => !e.department_id) ? [{ name: "Unassigned", count: current.filter((e) => !e.department_id).length }] : [],
+    ),
+    pending_leave: rows("leave_requests").filter((l) => l.status === "pending").sort((a, b) => a.start_date.localeCompare(b.start_date)).slice(0, 5).map(formatLeave),
+    on_leave_today: onLeave.map((e) => ({ id: e.id, name: fullName(e), type: leaveTypeName(leaveOn(e.id, t)!.leave_type_id) })),
+    birthdays: upcoming("date_of_birth").slice(0, 5),
+    anniversaries: upcoming("join_date").slice(0, 5),
+    recent_hires: [...emps].sort((a, b) => b.join_date.localeCompare(a.join_date)).slice(0, 5).map((e) => ({ id: e.id, name: fullName(e), job_title: e.job_title, department: deptName(e.department_id), join_date: e.join_date })),
+    interviews: rows("interviews").filter((i) => i.scheduled_at >= new Date(new Date().setHours(0, 0, 0, 0)).toISOString() && i.outcome === "pending" && !["hired", "rejected"].includes(rows("candidates").find((c) => c.id === i.candidate_id)?.stage)).sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at)).slice(0, 5).map((i) => ({ ...i, candidate_name: rows("candidates").find((c) => c.id === i.candidate_id)?.name })),
+    last_run: lastRun ? runTotals(lastRun) : null,
+    company: { name: company().name, created_at: company().created_at, members: rows("members").length, departments: rows("departments").length },
   };
 }
 
 function analytics(q: Q) {
-  const days = [7, 30, 90, 180, 365].includes(Number(q.days)) ? Number(q.days) : 90;
-  const leads = rows("leads");
-  const biz = rows("businesses");
-  const DAY = 86400_000;
-  const statuses = STATUSES.map((s) => {
-    const ls = leads.filter((l) => l.status === s);
-    return { status: s, count: ls.length, value: ls.reduce((a, l) => a + Number(l.deal_value || 0), 0) };
+  const months = [6, 12, 24].includes(Number(q.months)) ? Number(q.months) : 12;
+  const t = today();
+  const emps = rows("employees");
+  const current = emps.filter((e) => employedOn(e, t));
+  const now = new Date();
+  const series = Array.from({ length: months }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - (months - 1 - i), 1);
+    const period = dkey(d).slice(0, 7);
+    const { start, end } = monthBounds(period);
+    const recs = rows("attendance").filter((a) => a.date >= start && a.date <= end);
+    const attended = recs.filter((a) => ["present", "late", "remote", "half_day"].includes(a.status)).length;
+    const run = rows("payroll_runs").find((r) => r.period === period);
+    return {
+      period,
+      headcount: headcountAt(end < t ? end : t),
+      hires: emps.filter((e) => e.join_date >= start && e.join_date <= end).length,
+      exits: emps.filter((e) => e.termination_date && e.termination_date >= start && e.termination_date <= end).length,
+      attendance_rate: recs.length ? Math.round((attended / recs.length) * 1000) / 10 : null,
+      payroll: run ? runTotals(run).net : null,
+    };
   });
-  const series = Array.from({ length: days }, (_, i) => {
-    const d = new Date(now() - (days - 1 - i) * DAY);
-    const wonDay = leads.filter((l) => l.status === "won" && l.won_at && sameDay(l.won_at, d));
-    return { date: d.toISOString().slice(0, 10), leads: leads.filter((l) => sameDay(l.created_at, d)).length, discovered: biz.filter((b) => sameDay(b.discovered_at, d)).length, won: wonDay.length, revenue: wonDay.reduce((a, l) => a + Number(l.deal_value || 0), 0) };
-  });
-  const catMap = new Map<string, { leads: number; won: number; revenue: number }>();
-  for (const l of leads) {
-    const k = l.category ?? "";
-    const c = catMap.get(k) ?? { leads: 0, won: 0, revenue: 0 };
-    c.leads++;
-    if (l.status === "won") { c.won++; c.revenue += Number(l.deal_value || 0); }
-    catMap.set(k, c);
-  }
-  const won = leads.filter((l) => l.status === "won");
-  const cycles = won.filter((l) => l.won_at).map((l) => (new Date(l.won_at).getTime() - new Date(l.created_at).getTime()) / DAY);
-  const lostReasons = new Map<string, number>();
-  leads.filter((l) => l.status === "lost" && l.lost_reason).forEach((l) => lostReasons.set(l.lost_reason, (lostReasons.get(l.lost_reason) ?? 0) + 1));
-  const tasks = rows("tasks");
-  const since = now() - days * DAY;
-  const actCounts = new Map<string, number>();
-  rows("activities").filter((a) => ["call", "email", "meeting", "whatsapp", "note"].includes(a.type) && new Date(a.occurred_at).getTime() >= since).forEach((a) => actCounts.set(a.type, (actCounts.get(a.type) ?? 0) + 1));
-  const wsCounts = new Map<string, number>();
-  biz.forEach((b) => wsCounts.set(b.website_status, (wsCounts.get(b.website_status) ?? 0) + 1));
+  const exits12 = emps.filter((e) => e.termination_date && e.termination_date >= addDays(t, -365)).length;
+  const avgHead = series.slice(-12).reduce((s, m) => s + m.headcount, 0) / Math.max(1, Math.min(12, series.length));
+  const tenures = current.map((e) => (parseKey(t).getTime() - parseKey(e.join_date).getTime()) / (365.25 * 86400_000));
+  const count = (arr: Row[], key: (r: Row) => string) => {
+    const m = new Map<string, number>();
+    arr.forEach((r) => m.set(key(r), (m.get(key(r)) ?? 0) + 1));
+    return [...m.entries()].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+  };
+  const year = String(now.getFullYear());
+  const leaveByType = new Map<string, number>();
+  rows("leave_requests").filter((l) => l.status === "approved" && l.start_date.startsWith(year)).forEach((l) => leaveByType.set(leaveTypeName(l.leave_type_id), (leaveByType.get(leaveTypeName(l.leave_type_id)) ?? 0) + l.days));
+  const hired = rows("candidates").filter((c) => c.stage === "hired" && c.hired_at);
+  const reviews = rows("reviews").filter((r) => r.status === "completed");
   return {
-    days, statuses, series,
-    categories: [...catMap.entries()].sort((a, b) => b[1].leads - a[1].leads).slice(0, 12).map(([k, v]) => ({ category: k, label: osm.CATEGORIES[k]?.label ?? (k || "Uncategorised"), ...v })),
-    website_status: [...wsCounts.entries()].map(([status, count]) => ({ status, count })),
-    score_bands: { low: biz.filter((b) => b.opportunity_score < 25).length, medium: biz.filter((b) => b.opportunity_score >= 25 && b.opportunity_score < 50).length, high: biz.filter((b) => b.opportunity_score >= 50 && b.opportunity_score < 75).length, very_high: biz.filter((b) => b.opportunity_score >= 75).length },
-    activity: [...actCounts.entries()].map(([type, count]) => ({ type, count })),
-    avg_sales_cycle_days: cycles.length ? Math.round((cycles.reduce((a, b) => a + b, 0) / cycles.length) * 10) / 10 : null,
-    avg_deal_value: won.length ? Math.round((won.reduce((a, l) => a + Number(l.deal_value || 0), 0) / won.length) * 100) / 100 : null,
-    lost_reasons: [...lostReasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([reason, count]) => ({ reason, count })),
-    tasks: { done: tasks.filter((t) => t.status === "done").length, open: tasks.filter((t) => t.status !== "done").length, overdue: tasks.filter((t) => t.status !== "done" && isPast(t.due_at)).length },
+    months,
+    series,
+    headcount: current.length,
+    turnover_rate: avgHead ? Math.round((exits12 / avgHead) * 1000) / 10 : null,
+    avg_tenure_years: tenures.length ? Math.round((tenures.reduce((a, b) => a + b, 0) / tenures.length) * 10) / 10 : null,
+    by_department: count(current, (e) => deptName(e.department_id) ?? "Unassigned"),
+    by_type: count(current, (e) => ({ full_time: "Full-time", part_time: "Part-time", contract: "Contract", intern: "Intern" } as Record<string, string>)[e.employment_type] ?? e.employment_type),
+    by_gender: count(current.filter((e) => e.gender), (e) => e.gender),
+    leave_by_type: [...leaveByType.entries()].map(([name, value]) => ({ name, value })),
+    funnel: ["applied", "screening", "interview", "offer", "hired"].map((s, i, all) => ({ stage: s, count: rows("candidates").filter((c) => all.indexOf(c.stage) >= i || (c.stage === "rejected" && all.indexOf(c.rejected_from ?? "applied") >= i)).length })),
+    time_to_hire_days: hired.length ? Math.round(hired.reduce((s, c) => s + (new Date(c.hired_at).getTime() - new Date(c.created_at).getTime()) / 86400_000, 0) / hired.length) : null,
+    avg_review_score: reviews.length ? Math.round((reviews.reduce((s, r) => s + r.overall, 0) / reviews.length) * 10) / 10 : null,
+    reviews_completed: reviews.length,
   };
 }
 
-// generic CRUD for simple workspace tables
-function contactInput(body: any) {
-  const out: Row = {};
-  for (const k of ["first_name", "last_name", "job_title", "email", "phone", "whatsapp", "notes"]) if (k in body) out[k] = str(body[k], k === "notes" ? 5000 : 191);
-  if ("first_name" in body && !out.first_name) invalid({ first_name: "This field is required." });
-  if (out.email && !EMAIL.test(out.email)) invalid({ email: "Enter a valid email address." });
-  if ("lead_id" in body) out.lead_id = body.lead_id ? find("leads", body.lead_id, "Lead").id : null;
-  return out;
-}
-function taskInput(body: any) {
-  const out: Row = {};
-  if ("title" in body) { out.title = str(body.title, 255); if (!out.title) invalid({ title: "This field is required." }); }
-  if ("description" in body) out.description = str(body.description, 5000);
-  if ("priority" in body && PRIORITIES.includes(body.priority)) out.priority = body.priority;
-  if ("status" in body && ["todo", "in_progress", "done"].includes(body.status)) out.status = body.status;
-  if ("due_at" in body) out.due_at = iso(body.due_at);
-  if ("lead_id" in body) out.lead_id = body.lead_id ? find("leads", body.lead_id, "Lead").id : null;
-  if ("assigned_to" in body) {
-    if (body.assigned_to && !rows("members").some((m) => m.user_id === body.assigned_to)) invalid({ assigned_to: "Assignee must be a workspace member." });
-    out.assigned_to = body.assigned_to || null;
-  }
-  return out;
-}
-function eventInput(body: any) {
-  const out: Row = {};
-  if ("title" in body) { out.title = str(body.title, 255); if (!out.title) invalid({ title: "This field is required." }); }
-  for (const k of ["description", "location"]) if (k in body) out[k] = str(body[k], 5000);
-  if ("type" in body && ["meeting", "call", "demo", "other"].includes(body.type)) out.type = body.type;
-  for (const k of ["starts_at", "ends_at"]) if (k in body) { out[k] = iso(body[k]); if (!out[k]) invalid({ [k]: "Enter a valid date." }); }
-  if ("lead_id" in body) out.lead_id = body.lead_id ? find("leads", body.lead_id, "Lead").id : null;
-  return out;
-}
-
+// ------------------------------------------------------------------ routes
 const routes: [string, string, Handler][] = [
-  // auth
+  // ---- auth
   ["GET", "/auth/csrf", () => ({ token: "local" })],
-  ["POST", "/auth/register", register],
-  ["POST", "/auth/login", login],
+  ["POST", "/auth/register", async ({ body }) => {
+    const name = str(body.name, 120);
+    const email = (str(body.email, 191) ?? "").toLowerCase();
+    const errors: Record<string, string> = {};
+    if (!name || name.length < 2) errors.name = "This field is required.";
+    if (!EMAIL.test(email)) errors.email = "Enter a valid email address.";
+    if (Object.keys(errors).length) invalid(errors);
+    strongPassword(String(body.password ?? ""));
+    if (db().users.some((u) => u.email === email)) invalid({ email: "An account with this email already exists in this browser." });
+    const { salt, hash } = await hashPassword(String(body.password));
+    const uid = uuid();
+    const wid = uuid();
+    const t = nowIso();
+    db().users.push({ id: uid, email, name, password_hash: hash, salt, email_verified_at: null, created_at: t, last_login_at: t, job_title: null, company: null, phone: null, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", currency: "USD", default_city: null, default_country: null, onboarded_at: null });
+    const cname = str(body.workspace, 120) || `${name}'s Company`;
+    db().workspaces.push({ id: wid, name: cname, slug: cname.toLowerCase().replace(/[^a-z0-9]+/g, "-"), owner_id: uid, settings: { work_start: "09:00", late_after_minutes: 15, work_days: [1, 2, 3, 4, 5] }, created_at: t });
+    db().members.push({ id: uuid(), workspace_id: wid, user_id: uid, role: "owner", created_at: t });
+    for (const lt of DEFAULT_LEAVE_TYPES) db().leave_types.push({ id: uuid(), workspace_id: wid, ...lt, created_at: t });
+    save();
+    setSession({ user_id: uid, workspace_id: wid });
+    return { user_id: uid };
+  }],
+  ["POST", "/auth/login", async ({ body }) => {
+    const user = db().users.find((u) => u.email === String(body.email ?? "").trim().toLowerCase());
+    const check = await hashPassword(String(body.password ?? ""), user?.salt ?? "x");
+    if (!user || check.hash !== user.password_hash) fail(401, "Incorrect email or password.");
+    user!.last_login_at = nowIso();
+    save();
+    setSession({ user_id: user!.id, workspace_id: db().members.find((m) => m.user_id === user!.id)?.workspace_id });
+    return {};
+  }],
   ["POST", "/auth/logout", () => { setSession(null); return {}; }],
   ["GET", "/auth/me", me],
   ["PATCH", "/auth/profile", ({ body }) => {
@@ -458,41 +406,32 @@ const routes: [string, string, Handler][] = [
     const { user } = auth();
     if ((await hashPassword(String(body.current_password ?? ""), user.salt)).hash !== user.password_hash) invalid({ current_password: "Current password is incorrect." });
     strongPassword(String(body.password ?? ""));
-    Object.assign(user, await hashPassword(String(body.password)).then((h) => ({ salt: h.salt, password_hash: h.hash })));
+    const h = await hashPassword(String(body.password));
+    Object.assign(user, { salt: h.salt, password_hash: h.hash });
     save();
     return { changed: true };
   }],
-  ["POST", "/auth/forgot-password", () => fail(501, "Password reset by email needs the server edition. In this browser-only edition, accounts live in this browser — you can export/clear your data from Settings → Data.")],
-  ["POST", "/auth/reset-password", () => fail(501, "Password reset is not available in the browser-only edition.")],
-  ["POST", "/auth/verify-email", () => fail(501, "Email verification is not available in the browser-only edition.")],
-  ["POST", "/auth/resend-verification", () => fail(501, "Email verification is not available in the browser-only edition.")],
+  ["POST", "/auth/forgot-password", () => fail(501, "Password reset by email isn't available — accounts are stored in this browser.")],
+  ["POST", "/auth/reset-password", () => fail(501, "Password reset is not available in this edition.")],
+  ["POST", "/auth/verify-email", () => fail(501, "Email verification is not available in this edition.")],
+  ["POST", "/auth/resend-verification", () => fail(501, "Email verification is not available in this edition.")],
 
-  // workspace
-  ["GET", "/workspace", () => {
-    const w = db().workspaces.find((x) => x.id === ws())!;
-    return { workspace: { ...w, role: auth().role }, subscription: { plan: "free", status: "active", current_period_start: w.created_at }, counts: { members: rows("members").length, leads: rows("leads").length, businesses: rows("businesses").length }, usage: usageSummary() };
-  }],
+  // ---- company
+  ["GET", "/workspace", () => ({ workspace: { ...company(), role: auth().role }, subscription: { plan: "free", status: "active", current_period_start: company().created_at }, counts: { members: rows("members").length, employees: rows("employees").filter((e) => employedOn(e, today())).length, departments: rows("departments").length }, usage: [] })],
   ["PATCH", "/workspace", ({ body }) => {
     requireRole("owner", "admin");
-    const n = str(body.name, 120);
-    if (!n || n.length < 2) invalid({ name: "Must be at least 2 characters." });
-    db().workspaces.find((x) => x.id === ws())!.name = n;
-    save();
-    return {};
-  }],
-  ["GET", "/workspace/scoring", () => ({ rules: Object.entries(scoring.rules(overrides(ws()))).map(([key, r]) => ({ key, default: scoring.RULES[key].points, ...r })), bands: scoring.BANDS })],
-  ["PUT", "/workspace/scoring", ({ body }) => {
-    requireRole("owner", "admin");
-    const points: Record<string, number> = {};
-    for (const [k, v] of Object.entries(body.points ?? {})) {
-      if (!scoring.RULES[k] || isNaN(Number(v)) || Number(v) < 0 || Number(v) > 100) invalid({ points: `Invalid value for ${k} (0–100).` });
-      points[k] = Math.round(Number(v));
+    const c = company();
+    if ("name" in body) { const n = str(body.name, 120); if (!n || n.length < 2) invalid({ name: "Must be at least 2 characters." }); c.name = n; }
+    if (body.settings) {
+      const s = body.settings;
+      const next = { ...settings() };
+      if (s.work_start !== undefined) { if (!TIME.test(s.work_start)) invalid({ work_start: "Use HH:MM." }); next.work_start = s.work_start; }
+      if (s.late_after_minutes !== undefined) next.late_after_minutes = num(s.late_after_minutes, 0, 240);
+      if (Array.isArray(s.work_days)) { const d = [...new Set(s.work_days.map(Number).filter((x: number) => x >= 0 && x <= 6))]; if (!d.length) invalid({ work_days: "Choose at least one working day." }); next.work_days = d as number[]; }
+      c.settings = next;
     }
-    const w = db().workspaces.find((x) => x.id === ws())!;
-    w.settings = { ...(w.settings ?? {}), scoring: points };
-    rows("businesses").forEach(rescore);
     save();
-    return { rules: Object.entries(scoring.rules(points)).map(([key, r]) => ({ key, default: scoring.RULES[key].points, ...r })), bands: scoring.BANDS };
+    return { ...c, role: auth().role };
   }],
   ["GET", "/workspace/members", () => rows("members").map((m) => {
     const u = db().users.find((x) => x.id === m.user_id);
@@ -501,7 +440,7 @@ const routes: [string, string, Handler][] = [
   ["POST", "/workspace/members", ({ body }) => {
     requireRole("owner", "admin");
     const u = db().users.find((x) => x.email === String(body.email ?? "").trim().toLowerCase());
-    if (!u) invalid({ email: "No account with this email exists in this browser. In the browser-only edition, members must sign up on this same browser." });
+    if (!u) invalid({ email: "No account with this email exists in this browser. Ask them to sign up here first." });
     if (rows("members").some((m) => m.user_id === u!.id)) invalid({ email: "This user is already a member." });
     db().members.push({ id: uuid(), workspace_id: ws(), user_id: u!.id, role: body.role === "admin" ? "admin" : "member", created_at: nowIso() });
     save();
@@ -511,400 +450,574 @@ const routes: [string, string, Handler][] = [
     requireRole("owner", "admin");
     const m = rows("members").find((x) => x.id === params.id);
     if (!m) fail(404, "Member not found");
-    if (m!.role === "owner") fail(403, "The workspace owner cannot be removed.");
+    if (m!.role === "owner") fail(403, "The company owner cannot be removed.");
     remove("members", (x) => x.id === params.id);
     save();
     return {};
   }],
 
-  // discovery
-  ["GET", "/discovery/categories", () => Object.entries(osm.CATEGORIES).map(([key, c]) => ({ key, label: c.label }))],
-  ["POST", "/discovery/search", async ({ body }) => {
-    auth();
-    if (!osm.CATEGORIES[body.category]) invalid({ category: "Choose a category." });
-    const radius = Number(body.radius);
-    if (!(radius >= 200 && radius <= 10000)) invalid({ radius: "Radius must be between 200 m and 10 km." });
-    let center: { lat: number; lng: number; display_name: string } | null;
-    if (body.lat !== undefined && body.lng !== undefined) {
-      center = { lat: Number(body.lat), lng: Number(body.lng), display_name: `${Number(body.lat).toFixed(5)}, ${Number(body.lng).toFixed(5)}` };
-    } else {
-      const q = [body.area, body.city, body.country].filter((x) => typeof x === "string" && x.trim()).join(", ");
-      if (!q) invalid({ city: "Enter a city or pick a point on the map." });
-      try { center = await osm.geocode(q); } catch (e) { return fail((e as osm.OsmError).status ?? 502, (e as Error).message); }
-      if (!center) invalid({ city: `We couldn't find "${q}" on OpenStreetMap.` });
-    }
-    consume("discovery_search");
-    let found: osm.OsmBusiness[];
-    try { found = await osm.searchBusinesses(body.category, center!.lat, center!.lng, radius); } catch (e) { return fail((e as osm.OsmError).status ?? 502, (e as Error).message); }
-    const wsId = ws();
-    const ids: string[] = [];
-    for (const it of found) {
-      let b = db().businesses.find((x) => x.workspace_id === wsId && x.osm_type === it.osm_type && x.osm_id === it.osm_id);
-      const keepCheck = b && b.website_checked_at && b.website === it.website;
-      if (!b) {
-        b = { id: uuid(), workspace_id: wsId, discovered_at: nowIso() };
-        db().businesses.push(b);
-      }
-      Object.assign(b, it);
-      if (!keepCheck) {
-        const init = web.initial(it.website, it.socials);
-        Object.assign(b, { website_status: init.status, website_check_note: init.note, website_checked_at: null });
-      }
-      rescore(b);
-      ids.push(b.id);
-    }
-    save();
-    const list = ids.map((id) => db().businesses.find((b) => b.id === id)!).sort((a, b) => b.opportunity_score - a.opportunity_score || a.name.localeCompare(b.name));
-    return { center, radius, count: list.length, businesses: list.map(formatBusiness), attribution: "Data © OpenStreetMap contributors, ODbL" };
+  // ---- departments
+  ["GET", "/departments", () => {
+    const t = today();
+    return rows("departments").sort((a, b) => a.name.localeCompare(b.name)).map((d) => {
+      const members = rows("employees").filter((e) => e.department_id === d.id && employedOn(e, t));
+      return { ...d, head_name: fullName(rows("employees").find((e) => e.id === d.head_id)), headcount: members.length, payroll_cost: money(members.reduce((s, e) => s + (e.salary?.basic ?? 0), 0)) };
+    });
   }],
-  ["GET", "/businesses", ({ query }) => businessList(query)],
-  ["POST", "/businesses/check-websites", async ({ body }) => {
-    const ids: string[] = Array.isArray(body.ids) ? body.ids.slice(0, 10) : [];
-    if (!ids.length) invalid({ ids: "Provide 1–10 business ids." });
-    const out = [];
-    for (const id of ids) {
-      const b = rows("businesses").find((x) => x.id === id);
-      if (!b || !b.website) continue;
-      await checkBusiness(b);
-      out.push(formatBusiness(b));
-    }
-    save();
-    return out;
-  }],
-  ["GET", "/businesses/:id", ({ params }) => showBusiness(params.id)],
-  ["POST", "/businesses/:id/check-website", async ({ params }) => {
-    await checkBusiness(find("businesses", params.id, "Business"));
-    save();
-    return showBusiness(params.id);
-  }],
-  ["DELETE", "/businesses/:id", ({ params }) => { find("businesses", params.id, "Business"); remove("businesses", (b) => b.id === params.id); db().leads.forEach((l) => { if (l.business_id === params.id) l.business_id = null; }); save(); return {}; }],
-  ["GET", "/saved-searches", () => rows("saved_searches").sort((a, b) => b.created_at.localeCompare(a.created_at))],
-  ["POST", "/saved-searches", ({ body }) => {
+  ["POST", "/departments", ({ body }) => {
     const name = str(body.name, 120);
     if (!name) invalid({ name: "This field is required." });
-    const p = body.params ?? {};
-    if (!osm.CATEGORIES[p.category]) invalid({ params: "Invalid search." });
-    const params = Object.fromEntries(Object.entries(p).filter(([k]) => ["category", "country", "city", "area", "radius", "lat", "lng"].includes(k)));
-    const s = { id: uuid(), workspace_id: ws(), user_id: auth().user.id, name, params, result_count: body.result_count ?? null, last_run_at: nowIso(), created_at: nowIso() };
-    db().saved_searches.push(s);
+    if (rows("departments").some((d) => d.name.toLowerCase() === name!.toLowerCase())) invalid({ name: "A department with this name already exists." });
+    const d = { id: uuid(), workspace_id: ws(), name, description: str(body.description, 1000), head_id: body.head_id ? find("employees", body.head_id, "Employee").id : null, created_at: nowIso() };
+    db().departments.push(d);
     save();
-    return s;
+    return d;
   }],
-  ["POST", "/saved-searches/:id/run", ({ params, body }) => { const s = find("saved_searches", params.id, "Saved search"); s.last_run_at = nowIso(); if (typeof body.result_count === "number") s.result_count = body.result_count; save(); return {}; }],
-  ["DELETE", "/saved-searches/:id", ({ params }) => { find("saved_searches", params.id, "Saved search"); remove("saved_searches", (s) => s.id === params.id); save(); return {}; }],
-
-  // leads
-  ["GET", "/leads", ({ query }) => {
-    const items = leadFilters(query);
-    const sorters: Record<string, (a: Row, b: Row) => number> = {
-      name: (a, b) => a.name.localeCompare(b.name),
-      value: (a, b) => b.deal_value - a.deal_value,
-      score: (a, b) => (b.opportunity_score ?? -1) - (a.opportunity_score ?? -1),
-      updated: (a, b) => b.updated_at.localeCompare(a.updated_at),
-      follow_up: (a, b) => String(a.next_follow_up_at ?? "z").localeCompare(String(b.next_follow_up_at ?? "z")),
-      pipeline: (a, b) => (a.position ?? 0) - (b.position ?? 0) || b.created_at.localeCompare(a.created_at),
-    };
-    items.sort(sorters[query.sort ?? ""] ?? ((a, b) => b.created_at.localeCompare(a.created_at)));
-    return { ...page(items, query, 25), all_tags: [...new Set(rows("leads").flatMap((l) => l.tags ?? []))].sort() };
-  }],
-  ["POST", "/leads", ({ body }) => {
-    const data = leadInput(body, false);
-    const t = nowIso();
-    const lead: Row = { id: uuid(), workspace_id: ws(), owner_id: auth().user.id, business_id: null, name: null, category: null, address: null, phone: null, email: null, website: null, status: "new", priority: "medium", deal_value: 0, won_at: null, lost_at: null, lost_reason: null, tags: cleanTags(body.tags), created_at: t, updated_at: t };
-    if (body.business_id) {
-      const b = find("businesses", body.business_id, "Business");
-      if (rows("leads").some((l) => l.business_id === b.id)) fail(409, "This business is already saved as a lead.");
-      const fb = formatBusiness(b);
-      Object.assign(lead, { business_id: b.id, name: b.name, category: b.category, address: fb.address, phone: b.phone, email: b.email, website: b.website });
+  ["PATCH", "/departments/:id", ({ params, body }) => {
+    const d = find("departments", params.id, "Department");
+    if ("name" in body) {
+      const n = str(body.name, 120);
+      if (!n) invalid({ name: "This field is required." });
+      if (rows("departments").some((x) => x.id !== d.id && x.name.toLowerCase() === n!.toLowerCase())) invalid({ name: "A department with this name already exists." });
+      d.name = n;
     }
-    for (const [k, v] of Object.entries(data)) if (v !== null && v !== undefined) lead[k] = v;
-    if (lead.status === "won") lead.won_at = t;
-    if (lead.status === "lost") lead.lost_at = t;
-    lead.position = Math.min(0, ...rows("leads").filter((l) => l.status === lead.status).map((l) => l.position ?? 0)) - 1;
-    db().leads.push(lead);
-    logActivity(lead.id, { type: "system", subject: "Lead created" + (lead.business_id ? " from discovery" : "") });
-    if (str(body.note, 5000)) db().notes.push({ id: uuid(), workspace_id: lead.workspace_id, lead_id: lead.id, user_id: auth().user.id, body: str(body.note, 5000), created_at: t, updated_at: t });
-    if (iso(body.follow_up_at)) db().follow_ups.push({ id: uuid(), workspace_id: lead.workspace_id, lead_id: lead.id, user_id: auth().user.id, due_at: iso(body.follow_up_at), channel: "call", note: null, status: "pending", completed_at: null, notified_at: null, created_at: t });
+    if ("description" in body) d.description = str(body.description, 1000);
+    if ("head_id" in body) d.head_id = body.head_id ? find("employees", body.head_id, "Employee").id : null;
     save();
-    return leadDetail(lead.id);
+    return d;
   }],
-  ["GET", "/leads/export", ({ query }) => {
-    consume("lead_export");
+  ["DELETE", "/departments/:id", ({ params }) => {
+    find("departments", params.id, "Department");
+    rows("employees").forEach((e) => { if (e.department_id === params.id) e.department_id = null; });
+    rows("jobs").forEach((j) => { if (j.department_id === params.id) j.department_id = null; });
+    remove("departments", (d) => d.id === params.id);
     save();
-    const items = leadFilters(query).sort((a, b) => b.created_at.localeCompare(a.created_at));
-    return csv([
-      ["Name", "Category", "Status", "Priority", "Deal value", "Opportunity score", "Website status", "Phone", "Email", "Website", "Address", "Tags", "Next follow-up", "Created"],
-      ...items.map((l) => [l.name, l.category, l.status, l.priority, l.deal_value, l.opportunity_score, l.website_status, l.phone, l.email, l.website, l.address, l.tags.join("; "), l.next_follow_up_at, l.created_at]),
-    ]);
+    return {};
   }],
-  ["GET", "/leads/tags", () => {
-    const counts = new Map<string, number>();
-    rows("leads").forEach((l) => (l.tags ?? []).forEach((t: string) => counts.set(t, (counts.get(t) ?? 0) + 1)));
-    return [...counts.entries()].sort().map(([name, lead_count]) => ({ name, lead_count }));
-  }],
-  ["POST", "/leads/bulk-delete", ({ body }) => {
-    const ids = new Set<string>(Array.isArray(body.ids) ? body.ids : []);
-    const mine = rows("leads").filter((l) => ids.has(l.id)).map((l) => l.id);
-    mine.forEach(deleteLeadCascade);
-    save();
-    return { deleted: mine.length };
-  }],
-  ["GET", "/leads/:id", ({ params }) => leadDetail(params.id)],
-  ["PATCH", "/leads/:id", ({ params, body }) => {
-    const lead = find("leads", params.id, "Lead");
-    const data = leadInput(body, true);
-    if (data.status) { applyStatus(lead, data.status); delete data.status; }
-    Object.assign(lead, data);
-    if ("tags" in body) lead.tags = cleanTags(body.tags);
-    lead.updated_at = nowIso();
-    save();
-    return leadDetail(lead.id);
-  }],
-  ["DELETE", "/leads/:id", ({ params }) => { find("leads", params.id, "Lead"); deleteLeadCascade(params.id); save(); return {}; }],
-  ["POST", "/leads/:id/move", ({ params, body }) => {
-    const lead = find("leads", params.id, "Lead");
-    if (!STATUSES.includes(body.status)) invalid({ status: "Invalid option selected." });
-    const col = rows("leads").filter((l) => l.status === body.status && l.id !== lead.id).sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || b.created_at.localeCompare(a.created_at));
-    col.splice(Math.max(0, Math.min(col.length, Number(body.index) || 0)), 0, lead);
-    applyStatus(lead, body.status);
-    col.forEach((l, i) => (l.position = i));
-    lead.updated_at = nowIso();
-    save();
-    return { moved: true };
-  }],
-  ["POST", "/leads/:id/notes", ({ params, body }) => {
-    const lead = find("leads", params.id, "Lead");
-    const text = str(body.body, 5000);
-    if (!text) invalid({ body: "This field is required." });
-    const n = { id: uuid(), workspace_id: ws(), lead_id: lead.id, user_id: auth().user.id, body: text, created_at: nowIso(), updated_at: nowIso() };
-    db().notes.push(n);
-    touchLead(lead.id);
-    save();
-    return { id: n.id };
-  }],
-  ["DELETE", "/leads/:id/notes/:noteId", ({ params }) => { find("notes", params.noteId, "Note"); remove("notes", (n) => n.id === params.noteId); save(); return {}; }],
 
-  // contacts
-  ["GET", "/contacts", ({ query }) => {
-    let items = rows("contacts").map((c): Row => {
-      const l = db().leads.find((x) => x.id === c.lead_id);
-      const last = db().activities.filter((a) => a.contact_id === c.id).map((a) => a.occurred_at).sort().pop() ?? null;
-      return { ...c, lead_name: l?.name ?? null, lead_status: l?.status ?? null, last_contacted_at: last };
-    });
-    if (query.q) items = items.filter((c) => [c.first_name, c.last_name, c.email, c.phone, c.lead_name].some((v) => like(v, query.q!)));
-    if (query.lead_id) items = items.filter((c) => c.lead_id === query.lead_id);
-    items.sort((a, b) => `${a.first_name} ${a.last_name ?? ""}`.localeCompare(`${b.first_name} ${b.last_name ?? ""}`));
-    return page(items, query);
+  // ---- employees
+  ["GET", "/employees", ({ query }) => {
+    let items = rows("employees");
+    const t = today();
+    if (query.status === "current" || !query.status) items = items.filter((e) => e.status !== "terminated");
+    else if (query.status !== "all") items = items.filter((e) => e.status === query.status);
+    if (query.department_id) items = items.filter((e) => (query.department_id === "none" ? !e.department_id : e.department_id === query.department_id));
+    if (query.type) items = items.filter((e) => e.employment_type === query.type);
+    if (query.q) items = items.filter((e) => [fullName(e), e.email, e.phone, e.employee_code, e.job_title].some((v) => like(v, query.q!)));
+    const sorters: Record<string, (a: Row, b: Row) => number> = {
+      name: (a, b) => String(fullName(a)).localeCompare(String(fullName(b))),
+      newest: (a, b) => b.join_date.localeCompare(a.join_date),
+      oldest: (a, b) => a.join_date.localeCompare(b.join_date),
+      code: (a, b) => String(a.employee_code).localeCompare(String(b.employee_code)),
+    };
+    items.sort(sorters[query.sort ?? "name"] ?? sorters.name);
+    void t;
+    const p = page(items, query, 25);
+    return { ...p, items: p.items.map(formatEmployee) };
   }],
-  ["POST", "/contacts", ({ body }) => {
-    if (!str(body.first_name)) invalid({ first_name: "This field is required." });
-    const c = { id: uuid(), workspace_id: ws(), lead_id: null, first_name: null, last_name: null, job_title: null, email: null, phone: null, whatsapp: null, notes: null, created_at: nowIso(), updated_at: nowIso(), ...contactInput(body) };
-    db().contacts.push(c);
-    touchLead(c.lead_id);
+  ["GET", "/employees/export", () => {
+    const esc = (v: unknown) => {
+      let s = String(v ?? "");
+      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = ["Employee ID", "First name", "Last name", "Email", "Phone", "Department", "Job title", "Manager", "Type", "Status", "Join date", "Termination date", "Basic salary"];
+    const lines = rows("employees").sort((a, b) => String(a.employee_code).localeCompare(String(b.employee_code))).map((e) => {
+      const f = formatEmployee(e);
+      return [f.employee_code, f.first_name, f.last_name, f.email, f.phone, f.department_name, f.job_title, f.manager_name, f.employment_type, f.status, f.join_date, f.termination_date, f.salary?.basic];
+    });
+    return "﻿" + [header, ...lines].map((r) => r.map(esc).join(",")).join("\n");
+  }],
+  ["POST", "/employees", ({ body }) => {
+    const data = employeeInput(body);
+    const e: Row = {
+      id: uuid(), workspace_id: ws(), employee_code: data.employee_code || nextEmployeeCode(), first_name: null, last_name: null, email: null, phone: null, gender: null, date_of_birth: null, address: null,
+      department_id: null, job_title: null, manager_id: null, employment_type: "full_time", status: "active", join_date: today(), probation_end: null, termination_date: null,
+      salary: { basic: 0, allowances: [], deductions: [], tax_rate: 0 }, bank: { bank_name: null, account_name: null, account_number: null }, emergency: { name: null, phone: null, relation: null }, notes: null, created_at: nowIso(),
+      ...Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined)),
+    };
+    if (!e.employee_code) e.employee_code = nextEmployeeCode();
+    db().employees.push(e);
+    logEvent(e.id, "joined", `Joined${e.job_title ? ` as ${e.job_title}` : ""}${e.department_id ? ` in ${deptName(e.department_id)}` : ""}`);
+    save();
+    return formatEmployee(e);
+  }],
+  ["GET", "/employees/:id", ({ params }) => {
+    const e = find("employees", params.id, "Employee");
+    const t = today();
+    const from = addDays(t, -30);
+    const att = rows("attendance").filter((a) => a.employee_id === e.id && a.date >= from).sort((a, b) => b.date.localeCompare(a.date));
+    const summary = { present: 0, late: 0, remote: 0, half_day: 0, absent: 0, on_leave: 0 } as Record<string, number>;
+    att.forEach((a) => (summary[a.status] = (summary[a.status] ?? 0) + 1));
+    return {
+      ...formatEmployee(e),
+      reports: rows("employees").filter((x) => x.manager_id === e.id && x.status !== "terminated").map((x) => ({ id: x.id, full_name: fullName(x), job_title: x.job_title })),
+      balances: balances(e.id, new Date().getFullYear()),
+      attendance: att,
+      attendance_summary: summary,
+      leave_requests: rows("leave_requests").filter((l) => l.employee_id === e.id).sort((a, b) => b.start_date.localeCompare(a.start_date)).map(formatLeave),
+      payslips: rows("payslips").filter((p) => p.employee_id === e.id).sort((a, b) => b.period.localeCompare(a.period)).map(formatPayslip),
+      reviews: rows("reviews").filter((r) => r.employee_id === e.id).sort((a, b) => b.created_at.localeCompare(a.created_at)),
+      goals: rows("goals").filter((g) => g.employee_id === e.id).sort((a, b) => String(a.due_date ?? "z").localeCompare(String(b.due_date ?? "z"))),
+      events: rows("employee_events").filter((x) => x.employee_id === e.id).sort((a, b) => b.at.localeCompare(a.at)),
+    };
+  }],
+  ["PATCH", "/employees/:id", ({ params, body }) => {
+    const e = find("employees", params.id, "Employee");
+    const data = employeeInput(body, e);
+    if (data.department_id !== undefined && data.department_id !== e.department_id) logEvent(e.id, "department", `Moved to ${deptName(data.department_id) ?? "no department"}`);
+    if (data.job_title !== undefined && data.job_title !== e.job_title && data.job_title) logEvent(e.id, "title", `Job title changed to ${data.job_title}`);
+    if (data.salary && data.salary.basic !== e.salary?.basic) logEvent(e.id, "salary", `Basic salary updated`);
+    if (data.status && data.status !== e.status) logEvent(e.id, "status", data.status === "terminated" ? `Employment ended${data.termination_date ? ` on ${data.termination_date}` : ""}` : `Status changed to ${data.status}`);
+    if (data.status && data.status !== "terminated") data.termination_date = null;
+    Object.assign(e, data);
+    save();
+    return formatEmployee(e);
+  }],
+  ["DELETE", "/employees/:id", ({ params }) => {
+    find("employees", params.id, "Employee");
+    const id = params.id;
+    for (const t of ["attendance", "leave_requests", "employee_events", "reviews", "goals"] as const) remove(t, (r) => r.employee_id === id);
+    rows("employees").forEach((e) => { if (e.manager_id === id) e.manager_id = null; });
+    rows("departments").forEach((d) => { if (d.head_id === id) d.head_id = null; });
+    remove("employees", (e) => e.id === id);
+    save();
+    return {};
+  }],
+
+  // ---- attendance
+  ["GET", "/attendance", ({ query }) => {
+    const date = query.date && DATE.test(query.date) ? query.date : today();
+    const emps = rows("employees").filter((e) => employedOn(e, date)).sort((a, b) => String(fullName(a)).localeCompare(String(fullName(b))));
+    const recs = rows("attendance").filter((a) => a.date === date);
+    const out = emps.map((e) => {
+      const leave = leaveOn(e.id, date);
+      return { employee: { id: e.id, full_name: fullName(e), employee_code: e.employee_code, job_title: e.job_title, department_name: deptName(e.department_id) }, record: recs.find((a) => a.employee_id === e.id) ?? null, leave: leave ? { type: leaveTypeName(leave.leave_type_id) } : null };
+    });
+    const summary: Record<string, number> = { present: 0, late: 0, remote: 0, half_day: 0, absent: 0, on_leave: 0, unmarked: 0 };
+    out.forEach((r) => (r.record ? summary[r.record.status]++ : r.leave ? summary.on_leave++ : summary.unmarked++));
+    return { date, holiday: holidayOn(date)?.name ?? null, working_day: isWorkingDay(date), rows: out, summary };
+  }],
+  ["PUT", "/attendance", ({ body }) => {
+    const entries: Row[] = Array.isArray(body.entries) ? body.entries.slice(0, 2000) : [];
+    if (!entries.length) invalid({ entries: "Nothing to save." });
+    const s = settings();
+    const [sh, sm] = s.work_start.split(":").map(Number);
+    const lateAfter = sh * 60 + sm + s.late_after_minutes;
+    let saved = 0;
+    for (const en of entries) {
+      const e = find("employees", en.employee_id, "Employee");
+      const date = dateOnly(en.date, "date", true)!;
+      if (date > today()) invalid({ date: "Attendance can't be recorded for future dates." });
+      const existing = rows("attendance").find((a) => a.employee_id === e.id && a.date === date);
+      if (en.status === null) { if (existing) remove("attendance", (a) => a.id === existing.id); continue; }
+      if (!["present", "late", "remote", "half_day", "absent", "on_leave"].includes(en.status)) invalid({ status: "Invalid attendance status." });
+      const check_in = en.check_in && TIME.test(en.check_in) ? en.check_in : null;
+      const check_out = en.check_out && TIME.test(en.check_out) ? en.check_out : null;
+      if (check_in && check_out && check_out < check_in) invalid({ check_out: "Check-out must be after check-in." });
+      let status = en.status;
+      if (status === "present" && check_in) {
+        const [h, m] = check_in.split(":").map(Number);
+        if (h * 60 + m > lateAfter) status = "late";
+      }
+      const rec = { employee_id: e.id, date, status, check_in, check_out, note: str(en.note, 300) };
+      if (existing) Object.assign(existing, rec);
+      else db().attendance.push({ id: uuid(), workspace_id: ws(), ...rec });
+      saved++;
+    }
+    save();
+    return { saved };
+  }],
+  ["GET", "/attendance/month", ({ query }) => {
+    const period = query.month && /^\d{4}-\d{2}$/.test(query.month) ? query.month : today().slice(0, 7);
+    const { start, end } = monthBounds(period);
+    const days: { date: string; working: boolean; holiday: string | null }[] = [];
+    for (let k = start; k <= end; k = addDays(k, 1)) days.push({ date: k, working: isWorkingDay(k), holiday: holidayOn(k)?.name ?? null });
+    const emps = rows("employees").filter((e) => e.join_date <= end && (!e.termination_date || e.termination_date >= start)).sort((a, b) => String(fullName(a)).localeCompare(String(fullName(b))));
+    const recs = rows("attendance").filter((a) => a.date >= start && a.date <= end);
+    return {
+      month: period,
+      days,
+      employees: emps.map((e) => {
+        const mine = recs.filter((a) => a.employee_id === e.id);
+        const cells: Record<string, string> = {};
+        mine.forEach((a) => (cells[a.date] = a.status));
+        days.forEach((d) => { if (!cells[d.date] && leaveOn(e.id, d.date) && d.working) cells[d.date] = "on_leave"; });
+        const totals: Record<string, number> = {};
+        Object.values(cells).forEach((s) => (totals[s] = (totals[s] ?? 0) + 1));
+        return { id: e.id, full_name: fullName(e), employee_code: e.employee_code, cells, totals };
+      }),
+    };
+  }],
+
+  // ---- leave
+  ["GET", "/leave-types", () => rows("leave_types").sort((a, b) => a.name.localeCompare(b.name))],
+  ["POST", "/leave-types", ({ body }) => {
+    requireRole("owner", "admin");
+    const name = str(body.name, 80);
+    if (!name) invalid({ name: "This field is required." });
+    const t = { id: uuid(), workspace_id: ws(), name, days_per_year: num(body.days_per_year, 0, 366), paid: body.paid !== false, created_at: nowIso() };
+    db().leave_types.push(t);
+    save();
+    return t;
+  }],
+  ["PATCH", "/leave-types/:id", ({ params, body }) => {
+    requireRole("owner", "admin");
+    const t = find("leave_types", params.id, "Leave type");
+    if ("name" in body) { const n = str(body.name, 80); if (!n) invalid({ name: "This field is required." }); t.name = n; }
+    if ("days_per_year" in body) t.days_per_year = num(body.days_per_year, 0, 366);
+    if ("paid" in body) t.paid = !!body.paid;
+    save();
+    return t;
+  }],
+  ["DELETE", "/leave-types/:id", ({ params }) => {
+    requireRole("owner", "admin");
+    find("leave_types", params.id, "Leave type");
+    if (rows("leave_requests").some((l) => l.leave_type_id === params.id)) fail(409, "This leave type is used by existing requests and can't be deleted.");
+    remove("leave_types", (t) => t.id === params.id);
+    save();
+    return {};
+  }],
+  ["GET", "/leave-requests", ({ query }) => {
+    let items = rows("leave_requests");
+    if (query.status) items = items.filter((l) => l.status === query.status);
+    if (query.employee_id) items = items.filter((l) => l.employee_id === query.employee_id);
+    if (query.q) items = items.filter((l) => like(fullName(rows("employees").find((e) => e.id === l.employee_id)), query.q!));
+    items.sort((a, b) => (a.status === "pending" ? 0 : 1) - (b.status === "pending" ? 0 : 1) || b.start_date.localeCompare(a.start_date));
+    const all = rows("leave_requests");
+    const p = page(items, query, 50);
+    return { ...p, items: p.items.map(formatLeave), counts: { pending: all.filter((l) => l.status === "pending").length, approved: all.filter((l) => l.status === "approved").length, rejected: all.filter((l) => l.status === "rejected").length, on_leave_today: rows("employees").filter((e) => leaveOn(e.id, today())).length } };
+  }],
+  ["POST", "/leave-requests", ({ body }) => {
+    const e = find("employees", body.employee_id, "Employee");
+    const type = find("leave_types", body.leave_type_id, "Leave type");
+    const start = dateOnly(body.start_date, "start_date", true)!;
+    const end = body.half_day ? start : dateOnly(body.end_date, "end_date", true)!;
+    if (end < start) invalid({ end_date: "End date must be on or after the start date." });
+    const days = body.half_day ? 0.5 : workingDays(start, end);
+    if (days === 0) invalid({ end_date: "The selected dates contain no working days." });
+    if (rows("leave_requests").some((l) => l.employee_id === e.id && ["pending", "approved"].includes(l.status) && overlap(l.start_date, l.end_date, start, end))) invalid({ start_date: "This employee already has leave on some of these dates." });
+    const bal = balances(e.id, Number(start.slice(0, 4))).find((b) => b.leave_type_id === type.id)!;
+    if (days > bal.allowance - bal.used - bal.pending && !body.allow_negative) invalid({ leave_type_id: `Only ${Math.max(0, bal.allowance - bal.used - bal.pending)} day(s) of ${type.name} left this year.` });
+    const status = body.status === "approved" ? "approved" : "pending";
+    const l = { id: uuid(), workspace_id: ws(), employee_id: e.id, leave_type_id: type.id, start_date: start, end_date: end, half_day: !!body.half_day, days, reason: str(body.reason, 1000), status, decision_note: null, decided_at: status === "approved" ? nowIso() : null, created_at: nowIso() };
+    db().leave_requests.push(l);
+    logEvent(e.id, "leave", `${status === "approved" ? "Leave recorded" : "Leave requested"}: ${type.name}, ${days} day(s) from ${start}`);
+    if (status === "pending") notify(`Leave request: ${fullName(e)}`, `${type.name} · ${days} day(s) from ${start}`, "/leave", "leave_request");
+    save();
+    return formatLeave(l);
+  }],
+  ["PATCH", "/leave-requests/:id", ({ params, body }) => {
+    const l = find("leave_requests", params.id, "Leave request");
+    if (!["approved", "rejected", "cancelled", "pending"].includes(body.status)) invalid({ status: "Invalid option selected." });
+    if (body.status === "approved" && l.status !== "approved") {
+      const bal = balances(l.employee_id, Number(l.start_date.slice(0, 4))).find((b) => b.leave_type_id === l.leave_type_id);
+      if (bal && l.days > bal.allowance - bal.used && !body.allow_negative) invalid({ status: `Approving would exceed the ${bal.leave_type} allowance (${Math.max(0, bal.allowance - bal.used)} day(s) left).` });
+    }
+    l.status = body.status;
+    l.decision_note = str(body.decision_note, 500);
+    l.decided_at = body.status === "pending" ? null : nowIso();
+    logEvent(l.employee_id, "leave", `Leave ${body.status}: ${leaveTypeName(l.leave_type_id)} from ${l.start_date}`);
+    save();
+    return formatLeave(l);
+  }],
+  ["DELETE", "/leave-requests/:id", ({ params }) => { find("leave_requests", params.id, "Leave request"); remove("leave_requests", (l) => l.id === params.id); save(); return {}; }],
+  ["GET", "/leave/balances", ({ query }) => {
+    const year = Number(query.year) || new Date().getFullYear();
+    return rows("employees").filter((e) => e.status !== "terminated").sort((a, b) => String(fullName(a)).localeCompare(String(fullName(b)))).map((e) => ({ employee_id: e.id, employee_name: fullName(e), department_name: deptName(e.department_id), balances: balances(e.id, year) }));
+  }],
+
+  // ---- holidays
+  ["GET", "/holidays", ({ query }) => rows("holidays").filter((h) => !query.year || h.date.startsWith(query.year)).sort((a, b) => a.date.localeCompare(b.date))],
+  ["POST", "/holidays", ({ body }) => {
+    const name = str(body.name, 120);
+    const date = dateOnly(body.date, "date", true)!;
+    if (!name) invalid({ name: "This field is required." });
+    if (rows("holidays").some((h) => h.date === date)) invalid({ date: "There is already a holiday on this date." });
+    const h = { id: uuid(), workspace_id: ws(), name, date, created_at: nowIso() };
+    db().holidays.push(h);
+    save();
+    return h;
+  }],
+  ["DELETE", "/holidays/:id", ({ params }) => { find("holidays", params.id, "Holiday"); remove("holidays", (h) => h.id === params.id); save(); return {}; }],
+
+  // ---- calendar
+  ["GET", "/calendar", ({ query }) => {
+    const from = query.from ?? today().slice(0, 8) + "01";
+    const to = query.to ?? addDays(from, 41);
+    const current = rows("employees").filter((e) => e.status !== "terminated");
+    const yearly = (field: string) => current.flatMap((e) => {
+      if (!e[field]) return [];
+      const out: Row[] = [];
+      for (let y = Number(from.slice(0, 4)); y <= Number(to.slice(0, 4)); y++) {
+        const k = `${y}-${String(e[field]).slice(5)}`;
+        if (k >= from && k <= to && (field === "date_of_birth" || y > Number(String(e[field]).slice(0, 4)))) out.push({ employee_id: e.id, name: fullName(e), date: k, years: y - Number(String(e[field]).slice(0, 4)) });
+      }
+      return out;
+    });
+    return {
+      holidays: rows("holidays").filter((h) => h.date >= from && h.date <= to),
+      leaves: rows("leave_requests").filter((l) => ["approved", "pending"].includes(l.status) && overlap(l.start_date, l.end_date, from, to)).map(formatLeave),
+      interviews: rows("interviews").filter((i) => i.scheduled_at.slice(0, 10) >= from && i.scheduled_at.slice(0, 10) <= to && rows("candidates").find((c) => c.id === i.candidate_id)?.stage !== "rejected").map((i) => ({ ...i, candidate_name: rows("candidates").find((c) => c.id === i.candidate_id)?.name })),
+      birthdays: yearly("date_of_birth"),
+      anniversaries: yearly("join_date"),
+    };
+  }],
+
+  // ---- payroll
+  ["GET", "/payroll/runs", () => rows("payroll_runs").sort((a, b) => b.period.localeCompare(a.period)).map(runTotals)],
+  ["POST", "/payroll/runs", ({ body }) => {
+    requireRole("owner", "admin");
+    const period = String(body.period ?? "");
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) invalid({ period: "Choose a month." });
+    if (rows("payroll_runs").some((r) => r.period === period)) invalid({ period: "A payroll run for this month already exists." });
+    const { start, end } = monthBounds(period);
+    const wd = workingDays(start, end);
+    const emps = rows("employees").filter((e) => e.join_date <= end && (!e.termination_date || e.termination_date >= start) && (e.salary?.basic ?? 0) > 0);
+    if (!emps.length) invalid({ period: "No employees with a salary were employed in this month. Add basic salaries on employee profiles first." });
+    const run = { id: uuid(), workspace_id: ws(), period, status: "draft", created_at: nowIso(), finalized_at: null, paid_at: null };
+    db().payroll_runs.push(run);
+    for (const e of emps) {
+      // Unpaid days: working days before joining / after leaving, approved unpaid leave, absences and half days.
+      let unpaid = 0;
+      for (let k = start; k <= end; k = addDays(k, 1)) {
+        if (!isWorkingDay(k)) continue;
+        if (!employedOn(e, k)) { unpaid++; continue; }
+        const lv = leaveOn(e.id, k);
+        if (lv && !rows("leave_types").find((t) => t.id === lv.leave_type_id)?.paid) { unpaid += lv.half_day ? 0.5 : 1; continue; }
+        const a = rows("attendance").find((x) => x.employee_id === e.id && x.date === k);
+        if (a?.status === "absent" && !lv) unpaid++;
+        if (a?.status === "half_day" && !lv) unpaid += 0.5;
+      }
+      db().payslips.push(computePayslip({
+        id: uuid(), workspace_id: ws(), run_id: run.id, period, employee_id: e.id,
+        employee: { full_name: fullName(e), employee_code: e.employee_code, job_title: e.job_title, department_name: deptName(e.department_id), bank_name: e.bank?.bank_name ?? null, account_number: e.bank?.account_number ?? null },
+        working_days: wd, unpaid_days: unpaid, basic: e.salary.basic, allowances: [...(e.salary.allowances ?? [])], bonus: 0, deductions: [...(e.salary.deductions ?? [])], tax_rate: e.salary.tax_rate ?? 0,
+      }));
+    }
+    save();
+    return runTotals(run);
+  }],
+  ["GET", "/payroll/runs/:id", ({ params }) => {
+    const run = find("payroll_runs", params.id, "Payroll run");
+    return { ...runTotals(run), payslips: rows("payslips").filter((p) => p.run_id === run.id).sort((a, b) => a.employee.full_name.localeCompare(b.employee.full_name)).map(formatPayslip) };
+  }],
+  ["POST", "/payroll/runs/:id/finalize", ({ params }) => {
+    requireRole("owner", "admin");
+    const run = find("payroll_runs", params.id, "Payroll run");
+    if (run.status !== "draft") fail(409, "This payroll run is already finalized.");
+    run.status = "finalized";
+    run.finalized_at = nowIso();
+    notify(`Payroll finalized for ${run.period}`, `${rows("payslips").filter((p) => p.run_id === run.id).length} payslips ready.`, `/payroll/${run.id}`, "payroll");
+    save();
+    return runTotals(run);
+  }],
+  ["POST", "/payroll/runs/:id/pay", ({ params }) => {
+    requireRole("owner", "admin");
+    const run = find("payroll_runs", params.id, "Payroll run");
+    if (run.status !== "finalized") fail(409, "Finalize the payroll run before marking it as paid.");
+    run.status = "paid";
+    run.paid_at = nowIso();
+    save();
+    return runTotals(run);
+  }],
+  ["POST", "/payroll/runs/:id/reopen", ({ params }) => {
+    requireRole("owner", "admin");
+    const run = find("payroll_runs", params.id, "Payroll run");
+    if (run.status !== "finalized") fail(409, "Only finalized (unpaid) runs can be reopened.");
+    run.status = "draft";
+    run.finalized_at = null;
+    save();
+    return runTotals(run);
+  }],
+  ["DELETE", "/payroll/runs/:id", ({ params }) => {
+    requireRole("owner", "admin");
+    const run = find("payroll_runs", params.id, "Payroll run");
+    if (run.status === "paid") fail(409, "Paid payroll runs can't be deleted.");
+    remove("payslips", (p) => p.run_id === run.id);
+    remove("payroll_runs", (r) => r.id === run.id);
+    save();
+    return {};
+  }],
+  ["GET", "/payroll/payslips/:id", ({ params }) => formatPayslip(find("payslips", params.id, "Payslip"))],
+  ["PATCH", "/payroll/payslips/:id", ({ params, body }) => {
+    const p = find("payslips", params.id, "Payslip");
+    if (rows("payroll_runs").find((r) => r.id === p.run_id)?.status !== "draft") fail(409, "Reopen the payroll run to edit payslips.");
+    const items = (arr: unknown) => (Array.isArray(arr) ? arr : []).map((i: any) => ({ name: str(i?.name, 80) ?? "", amount: money(num(i?.amount)) })).filter((i) => i.name && i.amount > 0).slice(0, 20);
+    if ("bonus" in body) p.bonus = money(num(body.bonus));
+    if ("unpaid_days" in body) p.unpaid_days = num(body.unpaid_days, 0, p.working_days);
+    if ("allowances" in body) p.allowances = items(body.allowances);
+    if ("deductions" in body) p.deductions = items(body.deductions);
+    if ("tax_rate" in body) p.tax_rate = num(body.tax_rate, 0, 100);
+    computePayslip(p);
+    save();
+    return formatPayslip(p);
+  }],
+
+  // ---- recruitment
+  ["GET", "/jobs", ({ query }) => {
+    let items = rows("jobs");
+    if (query.status) items = items.filter((j) => j.status === query.status);
+    return items.sort((a, b) => (a.status === "open" ? 0 : 1) - (b.status === "open" ? 0 : 1) || b.created_at.localeCompare(a.created_at)).map((j) => ({
+      ...j, department_name: deptName(j.department_id), candidates: rows("candidates").filter((c) => c.job_id === j.id && !["hired", "rejected"].includes(c.stage)).length, hired: rows("candidates").filter((c) => c.job_id === j.id && c.stage === "hired").length,
+    }));
+  }],
+  ["POST", "/jobs", ({ body }) => {
+    const title = str(body.title, 160);
+    if (!title) invalid({ title: "This field is required." });
+    const j = { id: uuid(), workspace_id: ws(), title, department_id: body.department_id ? find("departments", body.department_id, "Department").id : null, location: str(body.location, 120), employment_type: EMP_TYPES.includes(body.employment_type) ? body.employment_type : "full_time", openings: Math.max(1, Math.round(num(body.openings, 1, 999))), description: str(body.description, 5000), status: ["open", "on_hold", "closed"].includes(body.status) ? body.status : "open", created_at: nowIso() };
+    db().jobs.push(j);
+    save();
+    return j;
+  }],
+  ["PATCH", "/jobs/:id", ({ params, body }) => {
+    const j = find("jobs", params.id, "Job");
+    if ("title" in body) { const t = str(body.title, 160); if (!t) invalid({ title: "This field is required." }); j.title = t; }
+    if ("department_id" in body) j.department_id = body.department_id ? find("departments", body.department_id, "Department").id : null;
+    for (const k of ["location", "description"]) if (k in body) j[k] = str(body[k], k === "description" ? 5000 : 120);
+    if (EMP_TYPES.includes(body.employment_type)) j.employment_type = body.employment_type;
+    if ("openings" in body) j.openings = Math.max(1, Math.round(num(body.openings, 1, 999)));
+    if (["open", "on_hold", "closed"].includes(body.status)) j.status = body.status;
+    save();
+    return j;
+  }],
+  ["DELETE", "/jobs/:id", ({ params }) => {
+    find("jobs", params.id, "Job");
+    rows("candidates").forEach((c) => { if (c.job_id === params.id) c.job_id = null; });
+    remove("jobs", (j) => j.id === params.id);
+    save();
+    return {};
+  }],
+  ["GET", "/candidates", ({ query }) => {
+    let items = rows("candidates");
+    if (query.job_id) items = items.filter((c) => c.job_id === query.job_id);
+    if (query.q) items = items.filter((c) => like(c.name, query.q!) || like(c.email, query.q!));
+    const now = new Date().toISOString();
+    return items.sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || b.created_at.localeCompare(a.created_at)).map((c) => ({
+      ...c, job_title: rows("jobs").find((j) => j.id === c.job_id)?.title ?? null,
+      next_interview_at: rows("interviews").filter((i) => i.candidate_id === c.id && i.outcome === "pending" && i.scheduled_at >= now).map((i) => i.scheduled_at).sort()[0] ?? null,
+    }));
+  }],
+  ["POST", "/candidates", ({ body }) => {
+    const name = str(body.name, 160);
+    if (!name) invalid({ name: "This field is required." });
+    const email = str(body.email, 191);
+    if (email && !EMAIL.test(email)) invalid({ email: "Enter a valid email address." });
+    const resume = str(body.resume_url, 500);
+    if (resume && !/^https?:\/\//i.test(resume)) invalid({ resume_url: "Enter a link starting with http:// or https://" });
+    const c = { id: uuid(), workspace_id: ws(), job_id: body.job_id ? find("jobs", body.job_id, "Job").id : null, name, email, phone: str(body.phone, 40), source: str(body.source, 80), stage: "applied", position: -Date.now(), rating: Math.round(num(body.rating, 0, 5)), notes: str(body.notes, 5000), resume_url: resume, hired_employee_id: null, created_at: nowIso(), updated_at: nowIso() };
+    db().candidates.push(c);
     save();
     return c;
   }],
-  ["PATCH", "/contacts/:id", ({ params, body }) => { const c = find("contacts", params.id, "Contact"); Object.assign(c, contactInput(body), { updated_at: nowIso() }); save(); return c; }],
-  ["DELETE", "/contacts/:id", ({ params }) => { find("contacts", params.id, "Contact"); remove("contacts", (c) => c.id === params.id); db().activities.forEach((a) => { if (a.contact_id === params.id) a.contact_id = null; }); save(); return {}; }],
-
-  // activities
-  ["GET", "/activities", ({ query }) => {
-    let items = rows("activities");
-    items = query.type ? items.filter((a) => a.type === query.type) : items.filter((a) => a.type !== "system");
-    if (query.lead_id) items = items.filter((a) => a.lead_id === query.lead_id);
-    items.sort((a, b) => b.occurred_at.localeCompare(a.occurred_at));
-    const counts: Record<string, number> = {};
-    rows("activities").filter((a) => ["call", "email", "meeting", "whatsapp", "note"].includes(a.type)).forEach((a) => (counts[a.type] = (counts[a.type] ?? 0) + 1));
-    const p = page(items, query);
-    return { ...p, items: p.items.map(formatActivity), counts };
+  ["GET", "/candidates/:id", ({ params }) => {
+    const c = find("candidates", params.id, "Candidate");
+    return { ...c, job_title: rows("jobs").find((j) => j.id === c.job_id)?.title ?? null, interviews: rows("interviews").filter((i) => i.candidate_id === c.id).sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at)) };
   }],
-  ["POST", "/activities", ({ body }) => {
-    const lead = find("leads", body.lead_id, "Lead");
-    if (!["call", "email", "meeting", "whatsapp", "note"].includes(body.type)) invalid({ type: "Invalid option selected." });
-    const contact = body.contact_id ? find("contacts", body.contact_id, "Contact").id : null;
-    const dur = body.duration_minutes === null || body.duration_minutes === undefined || body.duration_minutes === "" ? null : Number(body.duration_minutes);
-    if (dur !== null && (isNaN(dur) || dur < 0 || dur > 1440)) invalid({ duration_minutes: "Must be 0–1440 minutes." });
-    const id = uuid();
-    db().activities.push({ id, workspace_id: ws(), lead_id: lead.id, contact_id: contact, user_id: auth().user.id, type: body.type, direction: ["inbound", "outbound"].includes(body.direction) ? body.direction : null, subject: str(body.subject, 255), body: str(body.body, 10000), outcome: str(body.outcome, 120), duration_minutes: dur, occurred_at: iso(body.occurred_at) ?? nowIso(), created_at: nowIso() });
-    if (body.type !== "note" && (body.direction ?? "outbound") === "outbound" && lead.status === "new") applyStatus(lead, "contacted");
-    touchLead(lead.id);
+  ["PATCH", "/candidates/:id", ({ params, body }) => {
+    const c = find("candidates", params.id, "Candidate");
+    if ("name" in body) { const n = str(body.name, 160); if (!n) invalid({ name: "This field is required." }); c.name = n; }
+    if ("email" in body) { const e = str(body.email, 191); if (e && !EMAIL.test(e)) invalid({ email: "Enter a valid email address." }); c.email = e; }
+    if ("resume_url" in body) { const r = str(body.resume_url, 500); if (r && !/^https?:\/\//i.test(r)) invalid({ resume_url: "Enter a link starting with http:// or https://" }); c.resume_url = r; }
+    for (const k of ["phone", "source", "notes"]) if (k in body) c[k] = str(body[k], k === "notes" ? 5000 : 80);
+    if ("rating" in body) c.rating = Math.round(num(body.rating, 0, 5));
+    if ("job_id" in body) c.job_id = body.job_id ? find("jobs", body.job_id, "Job").id : null;
+    c.updated_at = nowIso();
     save();
-    return { id };
+    return c;
   }],
-  ["DELETE", "/activities/:id", ({ params }) => {
-    const a = find("activities", params.id, "Activity");
-    if (["system", "status_change"].includes(a.type)) fail(403, "System history entries cannot be deleted.");
-    remove("activities", (x) => x.id === params.id);
+  ["POST", "/candidates/:id/move", ({ params, body }) => {
+    const c = find("candidates", params.id, "Candidate");
+    const stages = ["applied", "screening", "interview", "offer", "hired", "rejected"];
+    if (!stages.includes(body.stage)) invalid({ stage: "Invalid stage." });
+    if (body.stage === "hired" && !c.hired_employee_id) fail(409, "Use “Hire” on the candidate to create their employee record.");
+    if (c.stage === "hired" && body.stage !== "hired") fail(409, "This candidate has already been hired.");
+    if (body.stage === "rejected" && c.stage !== "rejected") c.rejected_from = c.stage;
+    const col = rows("candidates").filter((x) => x.stage === body.stage && x.id !== c.id).sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    col.splice(Math.max(0, Math.min(col.length, Number(body.index) || 0)), 0, c);
+    c.stage = body.stage;
+    col.forEach((x, i) => (x.position = i));
+    c.updated_at = nowIso();
     save();
     return {};
   }],
-
-  // tasks
-  ["GET", "/tasks", ({ query }) => {
-    let items = rows("tasks");
-    if (["todo", "in_progress", "done"].includes(query.status ?? "")) items = items.filter((t) => t.status === query.status);
-    if (query.status === "open") items = items.filter((t) => t.status !== "done");
-    if (query.due === "overdue") items = items.filter((t) => t.status !== "done" && isPast(t.due_at));
-    if (query.due === "today") items = items.filter((t) => t.due_at && sameDay(t.due_at));
-    if (query.mine === "1") items = items.filter((t) => t.assigned_to === auth().user.id);
-    if (query.lead_id) items = items.filter((t) => t.lead_id === query.lead_id);
-    if (query.q) items = items.filter((t) => like(t.title, query.q!));
-    const pr = { urgent: 0, high: 1, medium: 2, low: 3 } as Record<string, number>;
-    items.sort((a, b) => Number(a.status === "done") - Number(b.status === "done") || String(a.due_at ?? "z").localeCompare(String(b.due_at ?? "z")) || pr[a.priority] - pr[b.priority]);
-    const all = rows("tasks");
-    const p = page(items, query, 100);
-    return {
-      ...p,
-      items: p.items.map((t) => ({ ...t, lead_name: db().leads.find((l) => l.id === t.lead_id)?.name ?? null, assignee_name: userName(t.assigned_to) })),
-      counts: { todo: all.filter((t) => t.status === "todo").length, in_progress: all.filter((t) => t.status === "in_progress").length, done: all.filter((t) => t.status === "done").length, overdue: all.filter((t) => t.status !== "done" && isPast(t.due_at)).length },
-    };
-  }],
-  ["POST", "/tasks", ({ body }) => {
-    if (!str(body.title)) invalid({ title: "This field is required." });
-    const t: Row = { id: uuid(), workspace_id: ws(), lead_id: null, assigned_to: auth().user.id, created_by: auth().user.id, title: null, description: null, priority: "medium", status: "todo", due_at: null, completed_at: null, created_at: nowIso(), updated_at: nowIso(), ...taskInput({ assigned_to: auth().user.id, ...body }) };
-    if (t.status === "done") t.completed_at = nowIso();
-    db().tasks.push(t);
-    touchLead(t.lead_id);
-    save();
-    return t;
-  }],
-  ["PATCH", "/tasks/:id", ({ params, body }) => {
-    const t = find("tasks", params.id, "Task");
-    const data = taskInput(body);
-    if (data.status) data.completed_at = data.status === "done" ? t.completed_at ?? nowIso() : null;
-    Object.assign(t, data, { updated_at: nowIso() });
-    save();
-    return t;
-  }],
-  ["DELETE", "/tasks/:id", ({ params }) => { find("tasks", params.id, "Task"); remove("tasks", (t) => t.id === params.id); save(); return {}; }],
-
-  // follow-ups
-  ["GET", "/follow-ups", ({ query }) => {
-    const scope = query.scope ?? "pending";
-    let items = rows("follow_ups");
-    if (scope === "pending") items = items.filter((f) => f.status === "pending");
-    if (scope === "overdue") items = items.filter((f) => f.status === "pending" && isPast(f.due_at));
-    if (scope === "upcoming") items = items.filter((f) => f.status === "pending" && !isPast(f.due_at));
-    if (scope === "done") items = items.filter((f) => f.status !== "pending");
-    if (query.lead_id) items = items.filter((f) => f.lead_id === query.lead_id);
-    items.sort(scope === "done" ? (a, b) => String(b.completed_at).localeCompare(String(a.completed_at)) : (a, b) => a.due_at.localeCompare(b.due_at));
-    const all = rows("follow_ups");
-    const p = page(items, query, 100);
-    return {
-      ...p,
-      items: p.items.map((f) => {
-        const l = db().leads.find((x) => x.id === f.lead_id);
-        return { ...f, lead_name: l?.name, lead_status: l?.status, lead_phone: l?.phone, lead_email: l?.email };
-      }),
-      counts: { overdue: all.filter((f) => f.status === "pending" && isPast(f.due_at)).length, today: all.filter((f) => f.status === "pending" && sameDay(f.due_at)).length, pending: all.filter((f) => f.status === "pending").length, done: all.filter((f) => f.status !== "pending").length },
-    };
-  }],
-  ["POST", "/follow-ups", ({ body }) => {
-    const lead = find("leads", body.lead_id, "Lead");
-    const due = iso(body.due_at);
-    if (!due) invalid({ due_at: "Enter a valid date." });
-    const f = { id: uuid(), workspace_id: ws(), lead_id: lead.id, user_id: auth().user.id, due_at: due, channel: ["call", "email", "meeting", "whatsapp", "other"].includes(body.channel) ? body.channel : "call", note: str(body.note, 500), status: "pending", completed_at: null, notified_at: null, created_at: nowIso() };
-    db().follow_ups.push(f);
-    touchLead(lead.id);
-    save();
-    return f;
-  }],
-  ["PATCH", "/follow-ups/:id", ({ params, body }) => {
-    const f = find("follow_ups", params.id, "Follow-up");
-    if ("due_at" in body) { const d = iso(body.due_at); if (!d) invalid({ due_at: "Enter a valid date." }); f.due_at = d; f.notified_at = null; }
-    if ("channel" in body && ["call", "email", "meeting", "whatsapp", "other"].includes(body.channel)) f.channel = body.channel;
-    if ("note" in body) f.note = str(body.note, 500);
-    if (["pending", "done", "skipped"].includes(body.status)) { f.status = body.status; f.completed_at = body.status === "pending" ? null : nowIso(); }
-    save();
-    return f;
-  }],
-  ["DELETE", "/follow-ups/:id", ({ params }) => { find("follow_ups", params.id, "Follow-up"); remove("follow_ups", (f) => f.id === params.id); save(); return {}; }],
-
-  // calendar
-  ["GET", "/calendar", ({ query }) => {
-    const from = query.from ? new Date(query.from).getTime() : 0;
-    const to = query.to ? new Date(query.to).getTime() : Infinity;
-    const inRange = (v: string | null) => !!v && new Date(v).getTime() >= from && new Date(v).getTime() <= to;
-    const leadName = (id: string | null) => db().leads.find((l) => l.id === id)?.name ?? null;
-    return {
-      events: rows("events").filter((e) => new Date(e.starts_at).getTime() < to && new Date(e.ends_at).getTime() >= from).map((e) => ({ ...e, lead_name: leadName(e.lead_id) })),
-      follow_ups: rows("follow_ups").filter((f) => inRange(f.due_at)).map((f) => ({ ...f, lead_name: leadName(f.lead_id) })),
-      tasks: rows("tasks").filter((t) => inRange(t.due_at)).map((t) => ({ ...t, lead_name: leadName(t.lead_id) })),
-    };
-  }],
-  ["POST", "/calendar/events", ({ body }) => {
-    if (!str(body.title)) invalid({ title: "This field is required." });
-    const e: Row = { id: uuid(), workspace_id: ws(), user_id: auth().user.id, lead_id: null, description: null, location: null, type: "meeting", created_at: nowIso(), ...eventInput(body) };
-    if (!e.starts_at || !e.ends_at) invalid({ starts_at: "Enter a valid date." });
-    if (e.ends_at < e.starts_at) invalid({ ends_at: "End must be after start." });
-    db().events.push(e);
-    if (e.lead_id && e.type === "meeting") logActivity(e.lead_id, { type: "meeting", subject: `Meeting scheduled: ${e.title}`, body: e.description, occurred_at: e.starts_at });
-    save();
-    return e;
-  }],
-  ["PATCH", "/calendar/events/:id", ({ params, body }) => {
-    const e = find("events", params.id, "Event");
-    const next = { ...e, ...eventInput(body) };
-    if (next.ends_at < next.starts_at) invalid({ ends_at: "End must be after start." });
-    Object.assign(e, next);
-    save();
-    return e;
-  }],
-  ["DELETE", "/calendar/events/:id", ({ params }) => { find("events", params.id, "Event"); remove("events", (e) => e.id === params.id); save(); return {}; }],
-
-  // email templates
-  ["GET", "/email-templates", () => rows("templates").sort((a, b) => a.name.localeCompare(b.name))],
-  ["POST", "/email-templates", ({ body }) => {
-    const t = { id: uuid(), workspace_id: ws(), created_by: auth().user.id, name: str(body.name, 120), subject: str(body.subject, 255), body: str(body.body, 20000), created_at: nowIso(), updated_at: nowIso() };
-    const errors: Record<string, string> = {};
-    for (const k of ["name", "subject", "body"] as const) if (!t[k]) errors[k] = "This field is required.";
-    if (Object.keys(errors).length) invalid(errors);
-    db().templates.push(t);
-    save();
-    return t;
-  }],
-  ["PATCH", "/email-templates/:id", ({ params, body }) => {
-    const t = find("templates", params.id, "Template");
-    for (const [k, max] of [["name", 120], ["subject", 255], ["body", 20000]] as const) if (k in body) { const v = str(body[k], max); if (!v) invalid({ [k]: "This field is required." }); t[k] = v; }
-    t.updated_at = nowIso();
-    save();
-    return t;
-  }],
-  ["DELETE", "/email-templates/:id", ({ params }) => { find("templates", params.id, "Template"); remove("templates", (t) => t.id === params.id); save(); return {}; }],
-
-  // audits
-  ["GET", "/audits", ({ query }) => rows("audits").sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, Number(query.limit) || 50).map((a) => ({ ...a, business_name: db().businesses.find((b) => b.id === a.business_id)?.name ?? null, lead_name: db().leads.find((l) => l.id === a.lead_id)?.name ?? null }))],
-  ["POST", "/audits", async ({ body }) => {
-    let business = body.business_id ? find("businesses", body.business_id, "Business") : null;
-    const lead = body.lead_id ? find("leads", body.lead_id, "Lead") : null;
-    const url = str(body.url) ?? lead?.website ?? business?.website;
-    if (!url) invalid({ url: "Enter a website URL to audit." });
-    if (!business && lead?.business_id) business = db().businesses.find((b) => b.id === lead.business_id) ?? null;
-    consume("website_audit");
-    let res;
-    try { res = await web.audit(url!); } catch (e) { return invalid({ url: (e as Error).message }); }
-    const a = { id: uuid(), workspace_id: ws(), business_id: business?.id ?? null, lead_id: lead?.id ?? null, created_by: auth().user.id, created_at: nowIso(), ...res };
-    db().audits.push(a);
-    if (business) {
-      Object.assign(business, { website_status: res.is_reachable ? "available" : "needs_review", website_check_note: res.is_reachable ? "Updated by website audit." : res.error, website_checked_at: nowIso() });
-      rescore(business);
+  ["POST", "/candidates/:id/hire", ({ body, params }) => {
+    const c = find("candidates", params.id, "Candidate");
+    if (c.stage === "hired") fail(409, "This candidate has already been hired.");
+    const job = c.job_id ? rows("jobs").find((j) => j.id === c.job_id) : null;
+    const [first, ...rest] = c.name.split(" ");
+    const data = employeeInput({
+      first_name: first, last_name: rest.join(" ") || null, email: c.email, phone: c.phone,
+      job_title: body.job_title ?? job?.title ?? null, department_id: body.department_id ?? job?.department_id ?? null,
+      employment_type: body.employment_type ?? job?.employment_type ?? "full_time", join_date: body.join_date, status: "probation",
+      probation_end: body.probation_end ?? null, salary: { basic: body.basic ?? 0, allowances: [], deductions: [], tax_rate: 0 },
+    });
+    const e: Row = { id: uuid(), workspace_id: ws(), employee_code: nextEmployeeCode(), gender: null, date_of_birth: null, address: null, manager_id: null, termination_date: null, bank: { bank_name: null, account_name: null, account_number: null }, emergency: { name: null, phone: null, relation: null }, notes: c.notes, created_at: nowIso(), ...data };
+    db().employees.push(e);
+    logEvent(e.id, "joined", `Hired from recruitment${e.job_title ? ` as ${e.job_title}` : ""}`);
+    Object.assign(c, { stage: "hired", hired_employee_id: e.id, hired_at: nowIso(), updated_at: nowIso() });
+    if (job) {
+      const hiredCount = rows("candidates").filter((x) => x.job_id === job.id && x.stage === "hired").length;
+      if (hiredCount >= job.openings) job.status = "closed";
     }
+    notify(`New hire: ${c.name}`, e.job_title ? `Joining as ${e.job_title} on ${e.join_date}` : `Joining on ${e.join_date}`, `/employees/${e.id}`, "hire");
     save();
-    return a;
+    return { employee_id: e.id };
   }],
-  ["GET", "/audits/:id", ({ params }) => find("audits", params.id, "Audit")],
-  ["DELETE", "/audits/:id", ({ params }) => {
-    const a = find("audits", params.id, "Audit");
-    remove("audits", (x) => x.id === params.id);
-    const b = a.business_id && db().businesses.find((x) => x.id === a.business_id);
-    if (b) rescore(b);
+  ["DELETE", "/candidates/:id", ({ params }) => { find("candidates", params.id, "Candidate"); remove("interviews", (i) => i.candidate_id === params.id); remove("candidates", (c) => c.id === params.id); save(); return {}; }],
+  ["POST", "/candidates/:id/interviews", ({ params, body }) => {
+    const c = find("candidates", params.id, "Candidate");
+    const at = iso(body.scheduled_at);
+    if (!at) invalid({ scheduled_at: "Enter a valid date and time." });
+    const i = { id: uuid(), workspace_id: ws(), candidate_id: c.id, scheduled_at: at, interviewer: str(body.interviewer, 120), mode: ["onsite", "video", "phone"].includes(body.mode) ? body.mode : "onsite", notes: str(body.notes, 2000), outcome: "pending", created_at: nowIso() };
+    db().interviews.push(i);
+    if (["applied", "screening"].includes(c.stage)) c.stage = "interview";
+    c.updated_at = nowIso();
     save();
-    return {};
+    return i;
   }],
+  ["PATCH", "/interviews/:id", ({ params, body }) => {
+    const i = find("interviews", params.id, "Interview");
+    if ("scheduled_at" in body) { const at = iso(body.scheduled_at); if (!at) invalid({ scheduled_at: "Enter a valid date and time." }); i.scheduled_at = at; }
+    for (const k of ["interviewer", "notes"]) if (k in body) i[k] = str(body[k], 2000);
+    if (["onsite", "video", "phone"].includes(body.mode)) i.mode = body.mode;
+    if (["pending", "passed", "failed"].includes(body.outcome)) i.outcome = body.outcome;
+    save();
+    return i;
+  }],
+  ["DELETE", "/interviews/:id", ({ params }) => { find("interviews", params.id, "Interview"); remove("interviews", (i) => i.id === params.id); save(); return {}; }],
 
-  // analytics & notifications
+  // ---- performance
+  ["GET", "/reviews", ({ query }) => {
+    let items = rows("reviews");
+    if (query.employee_id) items = items.filter((r) => r.employee_id === query.employee_id);
+    if (query.status) items = items.filter((r) => r.status === query.status);
+    return items.sort((a, b) => b.created_at.localeCompare(a.created_at)).map((r) => ({ ...r, employee_name: fullName(rows("employees").find((e) => e.id === r.employee_id)) }));
+  }],
+  ["POST", "/reviews", ({ body }) => reviewSave(null, body)],
+  ["PATCH", "/reviews/:id", ({ params, body }) => reviewSave(find("reviews", params.id, "Review"), body)],
+  ["DELETE", "/reviews/:id", ({ params }) => { find("reviews", params.id, "Review"); remove("reviews", (r) => r.id === params.id); save(); return {}; }],
+  ["GET", "/goals", ({ query }) => {
+    let items = rows("goals");
+    if (query.employee_id) items = items.filter((g) => g.employee_id === query.employee_id);
+    if (query.status) items = items.filter((g) => g.status === query.status);
+    return items.sort((a, b) => String(a.due_date ?? "z").localeCompare(String(b.due_date ?? "z"))).map((g) => ({ ...g, employee_name: fullName(rows("employees").find((e) => e.id === g.employee_id)) }));
+  }],
+  ["POST", "/goals", ({ body }) => goalSave(null, body)],
+  ["PATCH", "/goals/:id", ({ params, body }) => goalSave(find("goals", params.id, "Goal"), body)],
+  ["DELETE", "/goals/:id", ({ params }) => { find("goals", params.id, "Goal"); remove("goals", (g) => g.id === params.id); save(); return {}; }],
+
+  // ---- dashboard, analytics, search, notifications
   ["GET", "/dashboard", ({ query }) => dashboard(query)],
   ["GET", "/analytics", ({ query }) => analytics(query)],
+  ["GET", "/search", ({ query }) => {
+    const q = (query.q ?? "").trim();
+    if (q.length < 2) return { employees: [], candidates: [] };
+    return {
+      employees: rows("employees").filter((e) => [fullName(e), e.email, e.employee_code, e.job_title].some((v) => like(v, q))).slice(0, 6).map((e) => ({ id: e.id, name: fullName(e), detail: e.job_title ?? e.employee_code })),
+      candidates: rows("candidates").filter((c) => like(c.name, q) || like(c.email, q)).slice(0, 4).map((c) => ({ id: c.id, name: c.name, detail: c.stage })),
+    };
+  }],
   ["GET", "/notifications", ({ query }) => {
     syncDue();
     save();
@@ -917,10 +1030,63 @@ const routes: [string, string, Handler][] = [
   ["DELETE", "/notifications/:id", ({ params }) => { find("notifications", params.id, "Notification"); remove("notifications", (n) => n.id === params.id); save(); return {}; }],
 ];
 
-function deleteLeadCascade(id: string) {
-  remove("leads", (l) => l.id === id);
-  for (const t of ["notes", "activities", "tasks", "follow_ups"] as const) remove(t, (r) => r.lead_id === id);
-  for (const t of ["contacts", "events", "audits"] as const) (db()[t] as Row[]).forEach((r) => { if (r.lead_id === id) r.lead_id = null; });
+function reviewSave(existing: Row | null, body: any) {
+  const e = find("employees", body.employee_id ?? existing?.employee_id, "Employee");
+  const period = str(body.period ?? existing?.period, 60);
+  if (!period) invalid({ period: "This field is required." });
+  const ratings: Record<string, number> = {};
+  for (const [k, v] of Object.entries(body.ratings ?? existing?.ratings ?? {})) if (Number(v) >= 1 && Number(v) <= 5) ratings[String(k).slice(0, 60)] = Math.round(Number(v));
+  const scores = Object.values(ratings);
+  const status = body.status === "completed" ? "completed" : "draft";
+  if (status === "completed" && !scores.length) invalid({ ratings: "Rate at least one area before completing the review." });
+  const data = {
+    employee_id: e.id, period, reviewer: str(body.reviewer, 120), ratings,
+    overall: scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : 0,
+    strengths: str(body.strengths, 3000), improvements: str(body.improvements, 3000), status,
+    completed_at: status === "completed" ? existing?.completed_at ?? nowIso() : null,
+  };
+  let r = existing;
+  if (r) Object.assign(r, data);
+  else {
+    r = { id: uuid(), workspace_id: ws(), created_at: nowIso(), ...data };
+    db().reviews.push(r);
+  }
+  if (status === "completed" && existing?.status !== "completed") logEvent(e.id, "review", `Performance review completed (${period}) — ${data.overall}/5`);
+  save();
+  return r;
+}
+function goalSave(existing: Row | null, body: any) {
+  const e = find("employees", body.employee_id ?? existing?.employee_id, "Employee");
+  const title = str(body.title ?? existing?.title, 200);
+  if (!title) invalid({ title: "This field is required." });
+  const progress = Math.round(num(body.progress ?? existing?.progress ?? 0, 0, 100));
+  const data = { employee_id: e.id, title, description: str(body.description ?? existing?.description, 2000), due_date: dateOnly(body.due_date ?? existing?.due_date, "due_date"), progress, status: progress >= 100 ? "completed" : progress > 0 ? "in_progress" : "not_started" };
+  let g = existing;
+  if (g) Object.assign(g, data);
+  else {
+    g = { id: uuid(), workspace_id: ws(), created_at: nowIso(), ...data };
+    db().goals.push(g);
+  }
+  save();
+  return g;
+}
+
+/** Reminders that become due without user action (checked when notifications load). */
+function syncDue() {
+  const t = today();
+  for (const e of rows("employees")) {
+    if (e.status === "probation" && e.probation_end && e.probation_end <= addDays(t, 7) && e.probation_end >= t && e.notified_probation !== e.probation_end) {
+      notify(`Probation ending: ${fullName(e)}`, `Probation ends on ${e.probation_end}. Confirm or extend it.`, `/employees/${e.id}`, "probation");
+      e.notified_probation = e.probation_end;
+    }
+  }
+  for (const i of rows("interviews")) {
+    if (i.outcome === "pending" && i.scheduled_at.slice(0, 10) === t && !i.notified) {
+      const c = rows("candidates").find((x) => x.id === i.candidate_id);
+      notify(`Interview today: ${c?.name ?? "candidate"}`, `${new Date(i.scheduled_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}${i.interviewer ? ` with ${i.interviewer}` : ""}`, "/recruitment/candidates", "interview");
+      i.notified = true;
+    }
+  }
 }
 
 const compiled = routes.map(([method, pattern, handler]) => {
@@ -941,7 +1107,6 @@ export async function localRequest<T>(method: string, path: string, body?: unkno
     if (r.method !== method) continue;
     const params: Record<string, string> = {};
     r.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
-    // Return copies so React Query never holds references into the live store.
     const out = await r.handler({ body: (body as any) ?? {}, query: q, params });
     return (typeof out === "string" ? out : JSON.parse(JSON.stringify(out ?? null))) as T;
   }

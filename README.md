@@ -1,35 +1,32 @@
-# LeadForge
+# HelloHR
 
-LeadForge is a SaaS-style platform for **discovering local businesses and turning them into clients**. You can discover businesses on OpenStreetMap, spot the ones without a working website, score each opportunity, save leads, and run your sales in a built-in CRM.
+HelloHR is a human resource management app that covers employees, departments, attendance, leave, holidays, payroll, recruitment and performance in one place. It's built with React and TypeScript, has a clean dashboard design with light and **black-and-white dark mode**, and runs entirely in the browser.
 
-> **This is the frontend-only edition.** The whole app runs in the browser and your data is stored in this browser (`localStorage`). There is no server or database to set up, so you can host it anywhere for free, including Vercel.
+> Data is stored in your browser (`localStorage`), so there's no server or database to set up. Back it up under **Settings → Data & backup**.
 >
-> The full **PHP + MySQL** edition (server-side storage, password reset by email, deeper website audits) is kept on the [`backend`](https://github.com/ayanjaved791-del/leadforge/tree/backend) branch.
+> Earlier projects in this repository are kept on branches:
+> - [`leadforge-crm`](https://github.com/ayanjaved791-del/leadforge/tree/leadforge-crm): LeadForge lead discovery CRM
+> - [`backend`](https://github.com/ayanjaved791-del/leadforge/tree/backend): its PHP + MySQL edition
 
 ## Features
-- **Business discovery:** search by country, city, area, category (18 types) and radius, using the free OpenStreetMap Nominatim and Overpass APIs. Only real OpenStreetMap data is shown; missing information is never invented.
-- **Map explorer:** a Leaflet + OpenStreetMap map with markers coloured by score, a radius circle, click-to-search and save-from-popup.
-- **Website status:**
-  - Statuses: Available, No Website Found, Inactive, Needs Review, Unknown.
-  - "No website" is clearly labelled as not proof, and uncertain browser checks are marked *Needs Review*.
-- **Opportunity score (0–100):** transparent rules, adjustable per workspace. Each business shows why it got its score. It is not a probability of winning the deal.
-- **Leads:** notes, tags, priority, 8 statuses, follow-ups, search and filters, CSV export, bulk delete.
-- **CRM:**
-  - Drag-and-drop pipeline and contacts.
-  - Activity log for calls, emails, meetings and WhatsApp.
-  - Follow-up reminders, tasks, a calendar, email templates and revenue tracking.
-- **Website audit:** reachability, HTTPS and response time.
-- **Dashboard and analytics:** every number is calculated from your own data; nothing is hard-coded.
-- **Accounts:** registration, login, onboarding and workspaces. Passwords are hashed with PBKDF2 (Web Crypto).
-- **Data and backup:** export and restore a JSON backup, or delete everything, under **Settings → Data & backup**.
+| Module | What you can do |
+| --- | --- |
+| **Dashboard** | Payroll total, headcount, who's present or on leave today, open positions, hires vs exits chart, 14-day attendance trend, pending leave approvals, upcoming birthdays, anniversaries and interviews |
+| **Employees** | Directory (list/grid, search, filters, CSV export); profiles with personal, job, manager, salary, bank and emergency details; timeline, leave balances, attendance, payslips, reviews and goals; probation and offboarding |
+| **Departments** | Department heads, headcount and payroll cost per department |
+| **Attendance** | Daily register with check-in/out (automatic *Late* after start time + grace period); monthly overview grid |
+| **Leave** | Requests with approve/reject, balances per leave type and year, configurable leave types (paid/unpaid). Weekends and holidays aren't counted |
+| **Holidays & calendar** | Company holidays; a month calendar of leave, holidays, interviews, birthdays and work anniversaries |
+| **Payroll** | Monthly runs built from each salary set-up (basic, allowances, deductions, tax %). Unpaid leave, absences, half days and partial months are deducted automatically. Adjust drafts, finalize, mark as paid, print payslips |
+| **Recruitment** | Job openings and a drag-and-drop candidate pipeline (Applied → Screening → Interview → Offer → Hired/Rejected). Interviews with outcomes; **Hire** creates the employee record |
+| **Performance** | Reviews rated 1–5 on six criteria, with strengths and improvement notes; goals with progress tracking |
+| **Analytics** | Headcount trend, turnover, tenure, attendance rate, leave by type, payroll cost, recruitment funnel, time to hire, department and employment-type mix |
+| **Settings** | Profile, password, company working days and hours, HR admins, data backup and restore |
 
-### Limits of the browser-only edition
-- **Data stays in the browser.** Other browsers and devices won't see it, and clearing site data erases it, so download backups regularly.
-- **No emails.** Password reset and email verification need the server edition.
-- **Browsers can't read other websites (CORS).** Website checks can only confirm that a site answers over HTTPS and how fast. Audits can't read page content such as title, meta tags or viewport.
+Nothing is pre-filled: every number comes from the records you enter.
 
 ## Tech stack
-TypeScript · React 19 · Vite · Tailwind CSS v4 · shadcn/ui (Radix) · Lucide icons · Recharts · TanStack Query · React Router · Leaflet + OpenStreetMap
+TypeScript · React 19 · Vite · Tailwind CSS v4 · shadcn/ui (Radix) · Lucide icons · Recharts · TanStack Query · React Router
 
 ## Run locally
 ```bash
@@ -42,23 +39,21 @@ npm run build      # static site in frontend/dist
 ```
 
 ## Deploy to Vercel
-1. On vercel.com, go to **Add New → Project** and import this repository.
-2. Click **Deploy**. No environment variables are needed.
+Import the repository on vercel.com and click **Deploy**. No settings or environment variables are needed. Root Directory can be `./` or `frontend`; both work.
 
-Root Directory can be left empty (`./`) or set to `frontend`; both work. `vercel.json` handles the build and makes deep links (e.g. `/leads/123`) load the app.
-
-The output is a static site, so any other static host works too: Netlify, GitHub Pages or Cloudflare Pages, or upload `frontend/dist` to any web server. Configure your host to serve `index.html` for unknown paths.
+Any static host works too. Serve `frontend/dist` and route unknown paths to `index.html`.
 
 ## Project structure
 ```
-frontend/
-  src/
-    components/   layout (sidebar, header), shared UI, shadcn/ui primitives
-    pages/        dashboard, discovery, leads, CRM, audit, analytics, settings…
-    lib/api.ts    API client (browser-only mode by default)
-    lib/local/    in-browser data layer: storage, OpenStreetMap, scoring, website checks, request router
+frontend/src/
+  components/layout   sidebar, header, auth layout
+  components/shared   cards, forms, modals, pickers, badges
+  pages/              dashboard, analytics, people/, time/, payroll/, talent/, settings
+  lib/api.ts          API client
+  lib/local/          in-browser API (server.ts) and storage (store.ts)
 ```
-`lib/local/server.ts` implements the same endpoints as the PHP API, so the pages don't care which edition they run on. To switch back to the PHP backend, restore it from the `backend` branch and build with `VITE_DATA_MODE=api` (see `frontend/.env.example`).
+`lib/local/server.ts` implements a REST-style API in the browser, so the pages could later talk to a real backend without changes.
 
-## Attribution
-Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, available under the ODbL. Discovery requests are cached and throttled to respect the Nominatim and Overpass usage policies.
+## Data and privacy
+- **Where data lives:** everything stays in the browser profile where it was entered. Passwords are hashed with PBKDF2 (Web Crypto), and nothing is sent to a server.
+- **Shared admin access:** to share HelloHR between admins on different computers, a server backend would be needed.

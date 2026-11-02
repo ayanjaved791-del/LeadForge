@@ -1,36 +1,18 @@
-// Browser storage for the frontend-only edition of LeadForge.
+// Browser storage for HelloHR.
 // All records live in localStorage under one key; every record (except users) carries workspace_id.
 export type Row = Record<string, any>;
 
-export interface DB {
-  version: 1;
-  users: Row[];
-  workspaces: Row[];
-  members: Row[];
-  businesses: Row[];
-  leads: Row[];
-  contacts: Row[];
-  notes: Row[];
-  activities: Row[];
-  tasks: Row[];
-  follow_ups: Row[];
-  events: Row[];
-  templates: Row[];
-  audits: Row[];
-  notifications: Row[];
-  saved_searches: Row[];
-  usage: Row[];
-}
+export const TABLES = [
+  "users", "workspaces", "members", "departments", "employees", "employee_events", "attendance", "leave_types", "leave_requests",
+  "holidays", "payroll_runs", "payslips", "jobs", "candidates", "interviews", "reviews", "goals", "notifications",
+] as const;
+export type Table = (typeof TABLES)[number];
+export type DB = { version: 2 } & Record<Table, Row[]>;
 
-const KEY = "leadforge:db";
-const SESSION_KEY = "leadforge:session";
-const CACHE_KEY = "leadforge:cache";
+const KEY = "hellohr:db";
+const SESSION_KEY = "hellohr:session";
 
-const empty = (): DB => ({
-  version: 1,
-  users: [], workspaces: [], members: [], businesses: [], leads: [], contacts: [], notes: [], activities: [],
-  tasks: [], follow_ups: [], events: [], templates: [], audits: [], notifications: [], saved_searches: [], usage: [],
-});
+const empty = (): DB => Object.assign({ version: 2 as const }, Object.fromEntries(TABLES.map((t) => [t, [] as Row[]])) as Record<Table, Row[]>);
 
 let cache: DB | null = null;
 
@@ -50,7 +32,7 @@ export function save(): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(db()));
   } catch (e) {
-    throw new Error("Browser storage is full. Delete some discovered businesses or export and clear your data in Settings.");
+    throw new Error("Browser storage is full. Download a backup and remove old records in Settings → Data.");
   }
 }
 
@@ -60,14 +42,14 @@ export function exportAll(): string {
 
 export function importAll(json: string): void {
   const parsed = JSON.parse(json);
-  if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.users)) throw new Error("This file is not a LeadForge backup.");
+  if (!parsed || parsed.version !== 2 || !Array.isArray(parsed.users) || !Array.isArray(parsed.employees)) throw new Error("This file is not a HelloHR backup.");
   cache = { ...empty(), ...parsed };
   save();
 }
 
 export function clearAll(): void {
   cache = empty();
-  [KEY, SESSION_KEY, CACHE_KEY].forEach((k) => localStorage.removeItem(k));
+  [KEY, SESSION_KEY].forEach((k) => localStorage.removeItem(k));
 }
 
 export interface Session {
@@ -82,28 +64,6 @@ export const getSession = (): Session | null => {
   }
 };
 export const setSession = (s: Session | null) => (s ? localStorage.setItem(SESSION_KEY, JSON.stringify(s)) : localStorage.removeItem(SESSION_KEY));
-
-// --- small response cache for OpenStreetMap requests (keeps us within their fair-use policy)
-export function cacheGet<T>(key: string): T | undefined {
-  try {
-    const all = JSON.parse(localStorage.getItem(CACHE_KEY) || "{}");
-    const hit = all[key];
-    return hit && hit.expires > Date.now() ? (hit.value as T) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-export function cachePut(key: string, value: unknown, ttlMs: number): void {
-  try {
-    const all = JSON.parse(localStorage.getItem(CACHE_KEY) || "{}");
-    const now = Date.now();
-    for (const k of Object.keys(all)) if (all[k].expires < now) delete all[k];
-    all[key] = { value, expires: now + ttlMs };
-    localStorage.setItem(CACHE_KEY, JSON.stringify(all));
-  } catch {
-    localStorage.removeItem(CACHE_KEY);
-  }
-}
 
 export const uuid = () => crypto.randomUUID();
 export const nowIso = () => new Date().toISOString();

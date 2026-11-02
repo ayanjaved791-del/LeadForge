@@ -10,7 +10,8 @@ export const money = (v: number | null | undefined, compact = false) =>
   new Intl.NumberFormat(undefined, {
     style: "currency",
     currency,
-    maximumFractionDigits: compact || Math.abs(v ?? 0) >= 1000 ? 0 : 2,
+    minimumFractionDigits: compact ? 0 : 2,
+    maximumFractionDigits: compact ? 0 : 2,
     notation: compact && Math.abs(v ?? 0) >= 100000 ? "compact" : "standard",
   }).format(v ?? 0);
 

@@ -1,6 +1,5 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "leaflet/dist/leaflet.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -65,7 +64,7 @@
   --text-theme-sm--line-height: 20px;
 }
 
-/* shadcn/ui semantic tokens mapped onto the LeadForge palette */
+/* shadcn/ui semantic tokens mapped onto the HelloHR palette */
 @theme inline {
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -234,26 +233,4 @@
 }
 ::selection {
   background: rgba(70, 95, 255, 0.18);
-}
-
-/* Leaflet in dark mode */
-.dark .leaflet-tile-pane {
-  filter: grayscale(1) invert(1) brightness(0.85) contrast(0.9);
-}
-.leaflet-container {
-  font-family: var(--font-sans);
-  background: var(--muted);
-}
-.leaflet-popup-content-wrapper {
-  border-radius: 12px;
-  box-shadow: var(--shadow-theme-lg);
-}
-.dark .leaflet-popup-content-wrapper,
-.dark .leaflet-popup-tip {
-  background: #141414;
-  color: #fafafa;
-}
-.lf-marker {
-  background: transparent;
-  border: 0;
 }

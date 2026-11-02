@@ -1,0 +1,64 @@
+import { Link, useParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, Printer } from "lucide-react";
+import { api } from "@/lib/api";
+import { useMe } from "@/hooks/use-auth";
+import { money } from "@/lib/format";
+import type { Payslip as P } from "@/lib/types";
+import { ErrorState, Loading } from "@/components/shared/States";
+import { Button } from "@/components/ui/button";
+import { LogoMark } from "@/components/layout/Logo";
+import { periodLabel } from "./Payroll";
+
+const Line = ({ label, value, strong }: { label: string; value: number; strong?: boolean }) => (
+  <div className={`flex justify-between py-2 text-sm ${strong ? "border-t border-gray-200 font-semibold text-gray-900 dark:border-gray-700 dark:text-white" : "text-gray-600 dark:text-gray-300"}`}><span>{label}</span><span className="tabular-nums">{money(value)}</span></div>
+);
+
+export default function Payslip() {
+  const { id = "" } = useParams();
+  const me = useMe();
+  const { data: p, isLoading, error, refetch } = useQuery({ queryKey: ["payroll", "payslip", id], queryFn: () => api.get<P>(`/payroll/payslips/${id}`) });
+  if (isLoading) return <Loading />;
+  if (error || !p) return <ErrorState error={error} onRetry={refetch} />;
+  const fixed = p.deductions.reduce((s, d) => s + d.amount, 0);
+  return (
+    <>
+      <div className="mb-4 flex items-center justify-between print:hidden">
+        <Link to={`/payroll/${p.run_id}`} className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 dark:text-gray-400"><ArrowLeft className="size-4" /> Payroll run</Link>
+        <Button onClick={() => window.print()}><Printer /> Print / Save as PDF</Button>
+      </div>
+      <article className="lf-card mx-auto max-w-3xl p-8 print:max-w-none print:border-0 print:p-0 print:shadow-none">
+        <header className="flex flex-wrap items-start justify-between gap-4 border-b border-gray-200 pb-6 dark:border-gray-800">
+          <div className="flex items-center gap-3"><LogoMark className="size-10" /><div><p className="text-lg font-semibold text-gray-900 dark:text-white">{me.workspace.name}</p><p className="text-theme-sm text-gray-500">Payslip · {periodLabel(p.period)}</p></div></div>
+          <div className="text-right text-theme-sm text-gray-500"><p className="capitalize">Status: {p.run_status}</p><p>Working days: {p.working_days}</p>{p.unpaid_days > 0 && <p>Unpaid days: {p.unpaid_days}</p>}</div>
+        </header>
+        <section className="grid gap-4 border-b border-gray-200 py-6 sm:grid-cols-2 dark:border-gray-800">
+          <div><p className="text-theme-xs uppercase tracking-wide text-gray-400">Employee</p><p className="mt-1 font-semibold text-gray-900 dark:text-white">{p.employee.full_name}</p><p className="text-theme-sm text-gray-500">{p.employee.employee_code}{p.employee.job_title && ` · ${p.employee.job_title}`}</p>{p.employee.department_name && <p className="text-theme-sm text-gray-500">{p.employee.department_name}</p>}</div>
+          <div className="sm:text-right"><p className="text-theme-xs uppercase tracking-wide text-gray-400">Paid to</p><p className="mt-1 text-theme-sm text-gray-700 dark:text-gray-300">{p.employee.bank_name ?? "Bank not set"}</p><p className="text-theme-sm text-gray-500">{p.employee.account_number ?? ""}</p></div>
+        </section>
+        <section className="grid gap-8 py-6 sm:grid-cols-2">
+          <div>
+            <h3 className="mb-2 text-theme-sm font-semibold uppercase tracking-wide text-gray-400">Earnings</h3>
+            <Line label="Basic salary" value={p.basic} />
+            {p.allowances.map((a) => <Line key={a.name} label={a.name} value={a.amount} />)}
+            {p.bonus > 0 && <Line label="Bonus" value={p.bonus} />}
+            <Line label="Gross pay" value={p.gross} strong />
+          </div>
+          <div>
+            <h3 className="mb-2 text-theme-sm font-semibold uppercase tracking-wide text-gray-400">Deductions</h3>
+            {p.unpaid_deduction > 0 && <Line label={`Unpaid days (${p.unpaid_days})`} value={p.unpaid_deduction} />}
+            {p.tax > 0 && <Line label={`Income tax (${p.tax_rate}%)`} value={p.tax} />}
+            {p.deductions.map((d) => <Line key={d.name} label={d.name} value={d.amount} />)}
+            {p.total_deductions === 0 && <p className="py-2 text-sm text-gray-400">No deductions</p>}
+            <Line label="Total deductions" value={p.unpaid_deduction + p.tax + fixed} strong />
+          </div>
+        </section>
+        <footer className="flex items-center justify-between rounded-xl bg-gray-900 px-6 py-5 text-white print:border print:border-gray-300 print:bg-white print:text-black dark:bg-[#141414]">
+          <span className="text-theme-sm uppercase tracking-wide text-white/60 print:text-gray-500">Net pay</span>
+          <span className="text-2xl font-semibold tabular-nums">{money(p.net)}</span>
+        </footer>
+        <p className="mt-6 text-center text-theme-xs text-gray-400">Generated by HelloHR</p>
+      </article>
+    </>
+  );
+}

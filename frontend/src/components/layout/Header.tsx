@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, Building2, ChevronDown, LogOut, Menu, Moon, Search, Settings, Sun, User, UserRound, X } from "lucide-react";
+import { Bell, Briefcase, ChevronDown, LogOut, Menu, Moon, Search, Settings, Sun, User, UserRound, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth, useMe } from "@/hooks/use-auth";
 import { useTheme } from "@/hooks/use-theme";
 import { ago, initials } from "@/lib/format";
-import type { Business, Lead, Notification, Paged } from "@/lib/types";
+import type { Notification } from "@/lib/types";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useSidebar } from "./sidebar-context";
@@ -31,17 +31,11 @@ function GlobalSearch() {
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
-  const leads = useQuery({
-    queryKey: ["search-leads", term],
-    queryFn: () => api.get<Paged<Lead>>("/leads", { q: term, limit: 5 }),
+  const res = useQuery({
+    queryKey: ["search", term],
+    queryFn: () => api.get<{ employees: { id: string; name: string; detail: string | null }[]; candidates: { id: string; name: string; detail: string | null }[] }>("/search", { q: term }),
     enabled: term.length >= 2,
   });
-  const biz = useQuery({
-    queryKey: ["search-biz", term],
-    queryFn: () => api.get<Paged<Business>>("/businesses", { q: term, limit: 5 }),
-    enabled: term.length >= 2,
-  });
-
   const go = (to: string) => {
     setOpen(false);
     setQ("");
@@ -62,7 +56,7 @@ function GlobalSearch() {
         }}
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder="Search or type command..."
+        placeholder="Search employees or candidates..."
         className="h-11 w-full rounded-lg border border-gray-200 bg-transparent py-2.5 pl-12 pr-14 text-sm text-gray-800 shadow-theme-xs placeholder:text-gray-400 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 xl:w-[430px] dark:border-gray-800 dark:bg-white/[0.03] dark:text-white/90 dark:placeholder:text-white/30"
       />
       <kbd className="absolute right-2.5 top-1/2 inline-flex -translate-y-1/2 items-center gap-0.5 rounded-lg border border-gray-200 bg-gray-50 px-[7px] py-[4.5px] text-xs -tracking-[0.2px] text-gray-500 dark:border-gray-800 dark:bg-white/[0.03] dark:text-gray-400">
@@ -71,23 +65,24 @@ function GlobalSearch() {
       </kbd>
       {open && term.length >= 2 && (
         <div className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-xl border border-gray-200 bg-white p-2 shadow-theme-lg dark:border-gray-800 dark:bg-gray-dark">
-          {(leads.data?.items.length ?? 0) + (biz.data?.items.length ?? 0) === 0 ? (
-            <p className="px-3 py-3 text-sm text-gray-500">{leads.isLoading || biz.isLoading ? "Searching…" : `No results for “${term}”`}</p>
+          {(res.data?.employees.length ?? 0) + (res.data?.candidates.length ?? 0) === 0 ? (
+            <p className="px-3 py-3 text-sm text-gray-500">{res.isLoading ? "Searching…" : `No results for “${term}”`}</p>
           ) : (
             <>
-              {!!leads.data?.items.length && <p className="px-3 pb-1 pt-2 text-xs font-medium uppercase text-gray-400">Leads</p>}
-              {leads.data?.items.map((l) => (
-                <button key={l.id} onMouseDown={() => go(`/leads/${l.id}`)} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-white/5">
+              {!!res.data?.employees.length && <p className="px-3 pb-1 pt-2 text-xs font-medium uppercase text-gray-400">Employees</p>}
+              {res.data?.employees.map((e) => (
+                <button key={e.id} onMouseDown={() => go(`/employees/${e.id}`)} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-white/5">
                   <UserRound className="size-4 text-gray-400" />
-                  <span className="truncate text-gray-800 dark:text-white/90">{l.name}</span>
+                  <span className="truncate text-gray-800 dark:text-white/90">{e.name}</span>
+                  <span className="ml-auto shrink-0 text-xs text-gray-400">{e.detail}</span>
                 </button>
               ))}
-              {!!biz.data?.items.length && <p className="px-3 pb-1 pt-2 text-xs font-medium uppercase text-gray-400">Discovered businesses</p>}
-              {biz.data?.items.map((b) => (
-                <button key={b.id} onMouseDown={() => go(`/discover?business=${b.id}`)} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-white/5">
-                  <Building2 className="size-4 text-gray-400" />
-                  <span className="truncate text-gray-800 dark:text-white/90">{b.name}</span>
-                  <span className="ml-auto shrink-0 text-xs text-gray-400">{b.category_label}</span>
+              {!!res.data?.candidates.length && <p className="px-3 pb-1 pt-2 text-xs font-medium uppercase text-gray-400">Candidates</p>}
+              {res.data?.candidates.map((c) => (
+                <button key={c.id} onMouseDown={() => go(`/recruitment/candidates?open=${c.id}`)} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-white/5">
+                  <Briefcase className="size-4 text-gray-400" />
+                  <span className="truncate text-gray-800 dark:text-white/90">{c.name}</span>
+                  <span className="ml-auto shrink-0 text-xs capitalize text-gray-400">{c.detail}</span>
                 </button>
               ))}
             </>
@@ -183,8 +178,8 @@ function UserMenu() {
         <DropdownMenuItem onClick={() => navigate("/settings")} className="gap-3 rounded-lg px-3 py-2 text-theme-sm text-gray-700 dark:text-gray-400">
           <User className="size-5" /> Edit profile
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => navigate("/settings?tab=workspace")} className="gap-3 rounded-lg px-3 py-2 text-theme-sm text-gray-700 dark:text-gray-400">
-          <Settings className="size-5" /> Workspace settings
+        <DropdownMenuItem onClick={() => navigate("/settings?tab=company")} className="gap-3 rounded-lg px-3 py-2 text-theme-sm text-gray-700 dark:text-gray-400">
+          <Settings className="size-5" /> Company settings
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
@@ -205,7 +200,7 @@ export function Header() {
   const { toggle, toggleMobile, mobileOpen, isMobile } = useSidebar();
   const { dark, toggle: toggleTheme } = useTheme();
   return (
-    <header className="sticky top-0 z-40 flex w-full border-b border-gray-200/80 bg-white/85 backdrop-blur-md supports-[backdrop-filter]:bg-white/75 dark:border-gray-800 dark:bg-gray-900/85">
+    <header className="sticky top-0 z-40 flex w-full print:hidden border-b border-gray-200/80 bg-white/85 backdrop-blur-md supports-[backdrop-filter]:bg-white/75 dark:border-gray-800 dark:bg-gray-900/85">
       <div className="flex grow items-center justify-between gap-4 px-3 py-3 lg:px-6 lg:py-4">
         <div className="flex items-center gap-3 lg:gap-4">
           <button

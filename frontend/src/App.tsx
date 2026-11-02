@@ -11,19 +11,19 @@ import Onboarding from "@/pages/Onboarding";
 import Dashboard from "@/pages/Dashboard";
 
 const Analytics = lazy(() => import("@/pages/Analytics"));
-const Discover = lazy(() => import("@/pages/discovery/Discover"));
-const MapExplorer = lazy(() => import("@/pages/discovery/MapExplorer"));
-const SavedSearches = lazy(() => import("@/pages/discovery/SavedSearches"));
-const Leads = lazy(() => import("@/pages/leads/Leads"));
-const LeadDetail = lazy(() => import("@/pages/leads/LeadDetail"));
-const Pipeline = lazy(() => import("@/pages/leads/Pipeline"));
-const Contacts = lazy(() => import("@/pages/crm/Contacts"));
-const Activities = lazy(() => import("@/pages/crm/Activities"));
-const FollowUps = lazy(() => import("@/pages/crm/FollowUps"));
-const Tasks = lazy(() => import("@/pages/crm/Tasks"));
-const Calendar = lazy(() => import("@/pages/crm/Calendar"));
-const Audit = lazy(() => import("@/pages/Audit"));
-const Templates = lazy(() => import("@/pages/Templates"));
+const Employees = lazy(() => import("@/pages/people/Employees"));
+const EmployeeDetail = lazy(() => import("@/pages/people/EmployeeDetail"));
+const Departments = lazy(() => import("@/pages/people/Departments"));
+const Attendance = lazy(() => import("@/pages/time/Attendance"));
+const Leave = lazy(() => import("@/pages/time/Leave"));
+const Holidays = lazy(() => import("@/pages/time/Holidays"));
+const Calendar = lazy(() => import("@/pages/time/Calendar"));
+const Payroll = lazy(() => import("@/pages/payroll/Payroll"));
+const PayrollRun = lazy(() => import("@/pages/payroll/PayrollRun"));
+const Payslip = lazy(() => import("@/pages/payroll/Payslip"));
+const Jobs = lazy(() => import("@/pages/talent/Jobs"));
+const Candidates = lazy(() => import("@/pages/talent/Candidates"));
+const Performance = lazy(() => import("@/pages/talent/Performance"));
 const Notifications = lazy(() => import("@/pages/Notifications"));
 const Settings = lazy(() => import("@/pages/Settings"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
@@ -44,19 +44,19 @@ export default function App() {
           <Route element={<AppLayout />}>
             <Route index element={<Dashboard />} />
             <Route path="analytics" element={<L><Analytics /></L>} />
-            <Route path="discover" element={<L><Discover /></L>} />
-            <Route path="map" element={<L><MapExplorer /></L>} />
-            <Route path="saved-searches" element={<L><SavedSearches /></L>} />
-            <Route path="leads" element={<L><Leads /></L>} />
-            <Route path="leads/:id" element={<L><LeadDetail /></L>} />
-            <Route path="pipeline" element={<L><Pipeline /></L>} />
-            <Route path="contacts" element={<L><Contacts /></L>} />
-            <Route path="activities" element={<L><Activities /></L>} />
-            <Route path="follow-ups" element={<L><FollowUps /></L>} />
-            <Route path="tasks" element={<L><Tasks /></L>} />
+            <Route path="employees" element={<L><Employees /></L>} />
+            <Route path="employees/:id" element={<L><EmployeeDetail /></L>} />
+            <Route path="departments" element={<L><Departments /></L>} />
+            <Route path="attendance" element={<L><Attendance /></L>} />
+            <Route path="leave" element={<L><Leave /></L>} />
+            <Route path="holidays" element={<L><Holidays /></L>} />
             <Route path="calendar" element={<L><Calendar /></L>} />
-            <Route path="audit" element={<L><Audit /></L>} />
-            <Route path="templates" element={<L><Templates /></L>} />
+            <Route path="payroll" element={<L><Payroll /></L>} />
+            <Route path="payroll/:id" element={<L><PayrollRun /></L>} />
+            <Route path="payroll/payslip/:id" element={<L><Payslip /></L>} />
+            <Route path="recruitment/jobs" element={<L><Jobs /></L>} />
+            <Route path="recruitment/candidates" element={<L><Candidates /></L>} />
+            <Route path="performance" element={<L><Performance /></L>} />
             <Route path="notifications" element={<L><Notifications /></L>} />
             <Route path="settings" element={<L><Settings /></L>} />
             <Route path="*" element={<L><NotFound /></L>} />
