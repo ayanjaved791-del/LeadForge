@@ -6,14 +6,14 @@ export function PageHeader({ title, description, crumbs = [], actions }: { title
   return (
     <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h2 className="text-xl font-semibold text-gray-800 dark:text-white/90">{title}</h2>
+        <h2 className="text-2xl font-semibold tracking-tight text-gray-800 dark:text-white/90">{title}</h2>
         {description && <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{description}</p>}
       </div>
       <div className="flex flex-wrap items-center gap-3">
         {actions}
         {!actions && (
           <nav>
-            <ol className="flex items-center gap-1.5 text-sm">
+            <ol className="flex items-center gap-1.5 rounded-full border border-gray-200/80 bg-white px-3.5 py-1.5 text-theme-sm shadow-theme-xs dark:border-gray-800 dark:bg-white/[0.03]">
               <li>
                 <Link to="/" className="inline-flex items-center gap-1.5 text-gray-500 dark:text-gray-400">
                   Home
@@ -25,7 +25,7 @@ export function PageHeader({ title, description, crumbs = [], actions }: { title
                   {c.to ? (
                     <Link to={c.to} className="text-gray-500 dark:text-gray-400">{c.label}</Link>
                   ) : (
-                    <span className="text-gray-800 dark:text-white/90">{c.label}</span>
+                    <span className="font-medium text-brand-500 dark:text-brand-400">{c.label}</span>
                   )}
                 </li>
               ))}

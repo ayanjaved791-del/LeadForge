@@ -9,15 +9,18 @@ import { VerifyBanner } from "@/components/shared/VerifyBanner";
 
 function Shell() {
   const { expanded, hovered, mobileOpen, closeMobile } = useSidebar();
+  const { pathname } = useLocation();
   return (
     <div className="min-h-screen xl:flex">
       <Sidebar />
-      {mobileOpen && <div className="fixed inset-0 z-40 bg-gray-900/50 lg:hidden" onClick={closeMobile} />}
+      {mobileOpen && <div className="fixed inset-0 z-40 bg-gray-900/40 backdrop-blur-[2px] lg:hidden" onClick={closeMobile} />}
       <div className={cn("flex-1 transition-all duration-300 ease-in-out", expanded || hovered ? "lg:ml-[290px]" : "lg:ml-[90px]")}>
         <Header />
         <main className="mx-auto max-w-(--breakpoint-2xl) p-4 md:p-6">
           <VerifyBanner />
-          <Outlet />
+          <div key={pathname} className="lf-page">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

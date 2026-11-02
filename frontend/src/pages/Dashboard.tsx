@@ -98,8 +98,33 @@ export default function Dashboard() {
   const chartData = data.monthly.map((m) => ({ name: MONTHS[m.month - 1], leads: m.leads, won: m.won, revenue: m.revenue }));
   const fu = data.upcoming_follow_ups[fuIndex] ?? null;
 
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const attention = [
+    data.follow_ups.overdue && `${num(data.follow_ups.overdue)} overdue follow-up${data.follow_ups.overdue > 1 ? "s" : ""}`,
+    data.follow_ups.today && `${num(data.follow_ups.today)} follow-up${data.follow_ups.today > 1 ? "s" : ""} due today`,
+    openDeals > 0 && `${num(openDeals)} open deal${openDeals > 1 ? "s" : ""} worth ${money(k.pipeline_value)}`,
+  ].filter(Boolean);
+
   return (
     <div className="grid grid-cols-12 gap-4 md:gap-6">
+      <div className="col-span-12 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-theme-sm text-gray-500 dark:text-gray-400">{new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</p>
+          <h1 className="mt-0.5 text-2xl font-semibold tracking-tight text-gray-800 sm:text-[28px] dark:text-white/90">
+            {greeting}, {me.user.name.split(" ")[0]}
+          </h1>
+          <p className="mt-1 text-theme-sm text-gray-500 dark:text-gray-400">
+            {attention.length ? attention.join(" · ") : k.total_leads ? "You're all caught up. Time to discover new opportunities." : "Start by discovering businesses in your area."}
+          </p>
+        </div>
+        {data.follow_ups.overdue > 0 && (
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/follow-ups"><CalendarClock /> Review follow-ups</Link>
+          </Button>
+        )}
+      </div>
+
       {/* ---------- Pipeline value ---------- */}
       <div className="col-span-12 space-y-4 xl:col-span-6">
         <div className="lf-card p-5 sm:p-6">

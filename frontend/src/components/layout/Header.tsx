@@ -205,7 +205,7 @@ export function Header() {
   const { toggle, toggleMobile, mobileOpen, isMobile } = useSidebar();
   const { dark, toggle: toggleTheme } = useTheme();
   return (
-    <header className="sticky top-0 z-40 flex w-full border-gray-200 bg-white lg:border-b dark:border-gray-800 dark:bg-gray-900">
+    <header className="sticky top-0 z-40 flex w-full border-b border-gray-200/80 bg-white/85 backdrop-blur-md supports-[backdrop-filter]:bg-white/75 dark:border-gray-800 dark:bg-gray-900/85">
       <div className="flex grow items-center justify-between gap-4 px-3 py-3 lg:px-6 lg:py-4">
         <div className="flex items-center gap-3 lg:gap-4">
           <button
