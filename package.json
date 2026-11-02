@@ -1,0 +1,10 @@
+{
+  "name": "leadforge",
+  "private": true,
+  "description": "LeadForge — business lead discovery & CRM (React frontend in ./frontend, PHP API in ./api)",
+  "scripts": {
+    "install:frontend": "npm --prefix frontend ci",
+    "build": "npm --prefix frontend run build:vercel",
+    "dev": "npm --prefix frontend run dev"
+  }
+}
