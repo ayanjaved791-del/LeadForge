@@ -70,7 +70,7 @@ final class AnalyticsController
         $upcoming = Database::all("SELECT f.id, f.lead_id, f.due_at, f.channel, f.note, l.name AS lead_name FROM follow_ups f JOIN leads l ON l.id = f.lead_id
             WHERE f.workspace_id = ? AND f.status = 'pending' ORDER BY f.due_at ASC LIMIT 5", [$ws]);
         $recent = Database::all("SELECT a.id, a.lead_id, a.type, a.subject, a.body, a.occurred_at, l.name AS lead_name, l.deal_value, l.status
-            FROM lead_activities a JOIN leads l ON l.id = a.lead_id WHERE a.workspace_id = ? AND a.type <> 'system'
+            FROM lead_activities a JOIN leads l ON l.id = a.lead_id WHERE a.workspace_id = ? AND a.type <> 'system' AND a.occurred_at <= UTC_TIMESTAMP()
             ORDER BY a.occurred_at DESC LIMIT 6", [$ws]);
         $topOpp = Database::all("SELECT b.id, b.name, b.category, b.city, b.opportunity_score, b.website_status, l.id AS lead_id FROM businesses b
             LEFT JOIN leads l ON l.business_id = b.id WHERE b.workspace_id = ? ORDER BY b.opportunity_score DESC, b.discovered_at DESC LIMIT 5", [$ws]);

@@ -5,3 +5,4 @@ dist/
 api/config.php
 .env
 .env.local
+app/

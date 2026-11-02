@@ -23,7 +23,7 @@ final class LeadController
     private const LIST_SQL = "SELECT l.*, b.opportunity_score, b.website_status, b.lat, b.lng,
             (SELECT GROUP_CONCAT(t.name ORDER BY t.name SEPARATOR '\x1f') FROM lead_tags lt JOIN tags t ON t.id = lt.tag_id WHERE lt.lead_id = l.id) AS tag_list,
             (SELECT MIN(f.due_at) FROM follow_ups f WHERE f.lead_id = l.id AND f.status = 'pending') AS next_follow_up_at,
-            (SELECT MAX(a.occurred_at) FROM lead_activities a WHERE a.lead_id = l.id AND a.type NOT IN ('system','status_change')) AS last_activity_at
+            (SELECT MAX(a.occurred_at) FROM lead_activities a WHERE a.lead_id = l.id AND a.type NOT IN ('system','status_change') AND a.occurred_at <= UTC_TIMESTAMP()) AS last_activity_at
         FROM leads l LEFT JOIN businesses b ON b.id = l.business_id";
 
     /** @return array<string,mixed> */
