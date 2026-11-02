@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Trash2, UserPlus } from "lucide-react";
+import { Download, Trash2, Upload, UserPlus } from "lucide-react";
 import { toast } from "sonner";
-import { api, ApiError, errorMessage } from "@/lib/api";
+import { api, ApiError, errorMessage, LOCAL_MODE } from "@/lib/api";
 import { useMe } from "@/hooks/use-auth";
 import { useMutate } from "@/hooks/use-mutate";
 import { COUNTRIES } from "@/lib/constants";
@@ -28,7 +28,7 @@ function Profile() {
   const zones = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? [u.timezone];
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF({ ...f, [k]: e.target.value });
   return (
-    <Card title="Profile" description={`Signed in as ${u.email}${u.email_verified_at ? " · verified" : " · not verified"}`}>
+    <Card title="Profile" description={`Signed in as ${u.email}${LOCAL_MODE ? "" : u.email_verified_at ? " · verified" : " · not verified"}`}>
       <form onSubmit={(e) => { e.preventDefault(); save.mutate(f); }} className="grid gap-5 sm:grid-cols-2">
         <Field label="Full name" error={errors.name}><TextInput value={f.name} onChange={set("name")} required /></Field>
         <Field label="Job title"><TextInput value={f.job_title} onChange={set("job_title")} /></Field>
@@ -209,8 +209,57 @@ function Plan() {
           </li>
         ))}
       </ul>
-      <p className="mt-6 text-theme-xs text-gray-400">Self-hosting? Adjust the quotas in <code>api/config.php</code> → <code>limits</code>. Map data © OpenStreetMap contributors (ODbL).</p>
+      <p className="mt-6 text-theme-xs text-gray-400">{LOCAL_MODE ? "Quotas keep usage of the free OpenStreetMap services fair." : <>Self-hosting? Adjust the quotas in <code>api/config.php</code> → <code>limits</code>.</>} Map data © OpenStreetMap contributors (ODbL).</p>
     </Card>
+  );
+}
+
+function DataTab() {
+  const [confirm, setConfirm] = useState("");
+  const download = async () => {
+    const { exportAll } = await import("@/lib/local/store");
+    const url = URL.createObjectURL(new Blob([exportAll()], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `leadforge-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const restore = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const { importAll } = await import("@/lib/local/store");
+      importAll(await file.text());
+      toast.success("Backup restored. Reloading…");
+      setTimeout(() => window.location.reload(), 800);
+    } catch (e) {
+      toast.error(errorMessage(e));
+    }
+  };
+  const clear = async () => {
+    const { clearAll } = await import("@/lib/local/store");
+    clearAll();
+    window.location.href = import.meta.env.BASE_URL + "register";
+  };
+  return (
+    <div className="space-y-6">
+      <Card title="Your data" description="In this browser-only edition, every account, lead and CRM record is stored in this browser (localStorage). It is not sent to any server. Clearing your browser data, or using another browser or device, means you won't see it — so back it up regularly.">
+        <div className="flex flex-wrap gap-3">
+          <Button onClick={download}><Download /> Download backup (.json)</Button>
+          <label className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-lg border border-gray-300 bg-white px-5 text-sm font-medium text-gray-700 shadow-theme-xs hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+            <Upload className="size-4" /> Restore from backup
+            <input type="file" accept="application/json,.json" className="hidden" onChange={(e) => restore(e.target.files?.[0])} />
+          </label>
+        </div>
+        <p className="mt-3 text-theme-xs text-gray-400">Restoring replaces everything currently stored in this browser.</p>
+      </Card>
+      <Card title="Delete all data" description="Permanently removes every LeadForge account and record stored in this browser. This cannot be undone.">
+        <div className="flex max-w-md flex-col gap-3 sm:flex-row">
+          <TextInput value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder='Type "DELETE" to confirm' />
+          <Button variant="destructive" disabled={confirm !== "DELETE"} onClick={clear}><Trash2 /> Delete everything</Button>
+        </div>
+      </Card>
+    </div>
   );
 }
 
@@ -222,7 +271,7 @@ export default function Settings() {
       <PageHeader title="Settings" />
       <Tabs value={tab} onValueChange={(v) => setParams({ tab: v }, { replace: true })}>
         <TabsList className="mb-6 h-auto flex-wrap justify-start gap-1 rounded-lg bg-gray-100 p-1 dark:bg-gray-900">
-          {[["profile", "Profile"], ["security", "Password"], ["workspace", "Workspace & team"], ["scoring", "Scoring rules"], ["plan", "Plan & usage"]].map(([v, l]) => (
+          {[["profile", "Profile"], ["security", "Password"], ["workspace", "Workspace & team"], ["scoring", "Scoring rules"], ["plan", "Plan & usage"], ...(LOCAL_MODE ? [["data", "Data & backup"]] : [])].map(([v, l]) => (
             <TabsTrigger key={v} value={v} className="rounded-md px-3 py-1.5 text-theme-sm data-[state=active]:bg-white data-[state=active]:shadow-theme-xs dark:data-[state=active]:bg-gray-800">{l}</TabsTrigger>
           ))}
         </TabsList>
@@ -231,6 +280,7 @@ export default function Settings() {
         <TabsContent value="workspace"><Workspace /></TabsContent>
         <TabsContent value="scoring"><Scoring /></TabsContent>
         <TabsContent value="plan"><Plan /></TabsContent>
+        {LOCAL_MODE && <TabsContent value="data"><DataTab /></TabsContent>}
       </Tabs>
     </>
   );

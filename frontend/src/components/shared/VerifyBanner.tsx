@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { MailWarning, X } from "lucide-react";
 import { toast } from "sonner";
-import { api, errorMessage } from "@/lib/api";
+import { api, errorMessage, LOCAL_MODE } from "@/lib/api";
 import { useMe } from "@/hooks/use-auth";
 
 export function VerifyBanner() {
   const me = useMe();
   const [hidden, setHidden] = useState(false);
-  if (me.user.email_verified_at || hidden) return null;
+  if (LOCAL_MODE || me.user.email_verified_at || hidden) return null;
   const resend = async () => {
     try {
       await api.post("/auth/resend-verification");

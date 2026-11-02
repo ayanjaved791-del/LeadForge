@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { CheckCircle2, Loader2 } from "lucide-react";
-import { api, errorMessage } from "@/lib/api";
+import { api, errorMessage, LOCAL_MODE } from "@/lib/api";
 import { AuthLayout } from "@/components/layout/AuthLayout";
 import { Field, TextInput } from "@/components/shared/Form";
 import { Button } from "@/components/ui/button";
@@ -37,7 +37,12 @@ export default function ForgotPassword() {
         </>
       }
     >
-      {sent ? (
+      {LOCAL_MODE ? (
+        <div className="rounded-xl border border-warning-500/30 bg-warning-50 p-4 text-sm text-warning-600 dark:bg-warning-500/10 dark:text-orange-400">
+          <p className="font-medium">Password reset by email isn't available in this browser-only edition.</p>
+          <p className="mt-1">Accounts and data are stored only in this browser. If you can't remember your password, you can register a new account here, or clear this browser's LeadForge data from Settings → Data while signed in to another account.</p>
+        </div>
+      ) : sent ? (
         <div className="flex gap-3 rounded-xl border border-success-500/30 bg-success-50 p-4 text-sm text-success-700 dark:bg-success-500/10 dark:text-success-500">
           <CheckCircle2 className="size-5 shrink-0" />
           <p>If an account exists for <strong>{email}</strong>, a reset link is on its way. It expires in 1 hour. (Local development: emails are written to <code>api/storage/mail</code>.)</p>

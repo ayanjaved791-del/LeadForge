@@ -199,6 +199,8 @@ export interface AuditCheck {
   key: string;
   label: string;
   passed: boolean;
+  /** Check could not run (e.g. browser-only edition cannot read page content). */
+  skipped?: boolean;
   weight: number;
   detail: string;
 }

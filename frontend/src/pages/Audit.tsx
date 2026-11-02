@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, ExternalLink, FileSearch, Loader2, ShieldCheck, Trash2, XCircle } from "lucide-react";
-import { api } from "@/lib/api";
+import { CheckCircle2, ExternalLink, FileSearch, Loader2, MinusCircle, ShieldCheck, Trash2, XCircle } from "lucide-react";
+import { api, LOCAL_MODE } from "@/lib/api";
 import { useMutate } from "@/hooks/use-mutate";
 import { ago, dtTime, num, safeUrl } from "@/lib/format";
 import type { Audit as AuditT } from "@/lib/types";
@@ -31,7 +31,7 @@ function ScoreDial({ score }: { score: number }) {
 
 export function AuditReport({ audit }: { audit: AuditT }) {
   const link = safeUrl(audit.final_url ?? audit.url);
-  const failed = audit.checks.filter((c) => !c.passed);
+  const failed = audit.checks.filter((c) => !c.passed && !c.skipped);
   return (
     <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
       <div className="flex flex-col items-center text-center">
@@ -58,7 +58,7 @@ export function AuditReport({ audit }: { audit: AuditT }) {
         <ul className="divide-y divide-gray-100 rounded-xl border border-gray-100 dark:divide-gray-800 dark:border-gray-800">
           {audit.checks.map((c) => (
             <li key={c.key} className="flex items-start gap-3 px-4 py-3">
-              {c.passed ? <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success-500" /> : <XCircle className="mt-0.5 size-5 shrink-0 text-error-500" />}
+              {c.skipped ? <MinusCircle className="mt-0.5 size-5 shrink-0 text-gray-300 dark:text-gray-600" /> : c.passed ? <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success-500" /> : <XCircle className="mt-0.5 size-5 shrink-0 text-error-500" />}
               <div className="min-w-0 flex-1">
                 <p className="text-theme-sm font-medium text-gray-800 dark:text-white/90">{c.label}</p>
                 <p className="break-words text-theme-xs text-gray-500 dark:text-gray-400">{c.detail}</p>
@@ -103,7 +103,15 @@ export default function Audit() {
   return (
     <>
       <PageHeader title="Website Audit" />
-      <Card title="Audit a website" description="Checks availability, HTTPS, title, meta description, mobile viewport, favicon and basic SEO. Pages are read as text — scripts are never executed." className="mb-6">
+      <Card
+        title="Audit a website"
+        description={
+          LOCAL_MODE
+            ? "Checks whether the site answers over HTTPS and how fast. In this browser-only edition, browsers block reading other websites, so SEO content checks (title, meta, viewport, favicon) need the server edition."
+            : "Checks availability, HTTPS, title, meta description, mobile viewport, favicon and basic SEO. Pages are read as text — scripts are never executed."
+        }
+        className="mb-6"
+      >
         <form onSubmit={submit} className="flex flex-col gap-3 sm:flex-row">
           <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="example.com" className="lf-input flex-1" maxLength={500} />
           <Button type="submit" disabled={run.isPending || !url.trim()}>
@@ -145,7 +153,7 @@ export default function Audit() {
                       <button onClick={() => { setCurrent(a); qc.setQueryData(["audit", a.id], a); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="block truncate text-left font-medium text-gray-800 hover:text-brand-500 dark:text-white/90">{a.final_url ?? a.url}</button>
                     </td>
                     <td className="px-4 py-3 text-gray-500">{a.lead_id ? <Link to={`/leads/${a.lead_id}`} className="text-brand-500">{a.lead_name}</Link> : a.business_name ?? "—"}</td>
-                    <td className="px-4 py-3 text-gray-500">{a.checks.filter((c) => !c.passed).length}</td>
+                    <td className="px-4 py-3 text-gray-500">{a.checks.filter((c) => !c.passed && !c.skipped).length}</td>
                     <td className="px-4 py-3"><span className={cn("font-semibold", a.score >= 80 ? "text-success-600" : a.score >= 50 ? "text-warning-600" : "text-error-500")}>{a.score}</span></td>
                     <td className="px-4 py-3 text-theme-xs text-gray-500">{ago(a.created_at)}</td>
                     <td className="px-6 py-3 text-right"><Button size="icon-sm" variant="ghost" onClick={() => remove.mutate(a.id)} aria-label="Delete"><Trash2 /></Button></td>

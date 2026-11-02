@@ -379,7 +379,7 @@ export default function LeadDetail() {
                     <li key={a.id} className="flex items-center justify-between gap-3 py-3">
                       <div className="min-w-0">
                         <p className="truncate text-theme-sm font-medium text-gray-800 dark:text-white/90">{a.final_url ?? a.url}</p>
-                        <p className="text-theme-xs text-gray-500">{dtTime(a.created_at)} · {a.checks.filter((c) => !c.passed).length} issues</p>
+                        <p className="text-theme-xs text-gray-500">{dtTime(a.created_at)} · {a.checks.filter((c) => !c.passed && !c.skipped).length} issues</p>
                       </div>
                       <Link to={`/audit?id=${a.id}`} className="shrink-0 text-theme-sm font-semibold text-brand-500">{a.score}/100</Link>
                     </li>

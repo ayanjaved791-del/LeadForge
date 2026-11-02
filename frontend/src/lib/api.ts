@@ -1,5 +1,8 @@
-// Typed fetch wrapper for the PHP API. Session cookies + synchronizer CSRF token.
+// API client.
+// LOCAL_MODE (default): the frontend-only edition — requests are answered in the browser by lib/local/server.ts
+// and data is stored in localStorage. Set VITE_DATA_MODE=api to talk to the PHP backend (see the `backend` branch).
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "/api";
+export const LOCAL_MODE = (import.meta.env.VITE_DATA_MODE ?? "local") !== "api";
 
 export class ApiError extends Error {
   constructor(
@@ -34,6 +37,18 @@ export function buildUrl(path: string, query?: Query): string {
 }
 
 async function request<T>(method: string, path: string, body?: unknown, query?: Query, retry = true): Promise<T> {
+  if (LOCAL_MODE) {
+    const { localRequest } = await import("./local/server");
+    try {
+      return await localRequest<T>(method, path, body, query);
+    } catch (e) {
+      if (e instanceof ApiError) {
+        if (e.status === 401 && path !== "/auth/me") window.dispatchEvent(new Event("lf:unauthorized"));
+        throw e;
+      }
+      throw new ApiError(500, e instanceof Error ? e.message : "Something went wrong");
+    }
+  }
   const headers: Record<string, string> = { Accept: "application/json" };
   if (method !== "GET") {
     headers["Content-Type"] = "application/json";
@@ -77,6 +92,16 @@ export const api = {
   delete: <T>(path: string) => request<T>("DELETE", path),
   /** Downloads a CSV (cookie-authenticated GET). */
   download: async (path: string, query: Query, filename: string) => {
+    if (LOCAL_MODE) {
+      const text = await request<string>("GET", path, undefined, query);
+      const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
     const res = await fetch(buildUrl(path, query), { credentials: "include" });
     if (!res.ok) {
       const j = await res.json().catch(() => null);

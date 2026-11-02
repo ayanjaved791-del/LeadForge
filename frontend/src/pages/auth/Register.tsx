@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, errorMessage } from "@/lib/api";
+import { api, ApiError, errorMessage, LOCAL_MODE } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { AuthLayout } from "@/components/layout/AuthLayout";
 import { Field, TextInput } from "@/components/shared/Form";
@@ -74,6 +74,7 @@ export default function Register() {
         <Button type="submit" className="w-full" disabled={busy}>
           {busy && <Loader2 className="animate-spin" />} Create account
         </Button>
+        {LOCAL_MODE && <p className="text-center text-xs text-gray-400">This edition stores your account and data in this browser only. Use Settings → Data to back it up.</p>}
       </form>
     </AuthLayout>
   );

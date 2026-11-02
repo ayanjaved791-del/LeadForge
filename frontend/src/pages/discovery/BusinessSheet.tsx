@@ -142,7 +142,7 @@ export function BusinessSheet({ id, onClose }: { id: string | null; onClose: () 
                     <Link to={`/audit?id=${b.latest_audit.id}`} className="text-xs text-brand-500">Full report</Link>
                   </div>
                   <p className="text-sm text-gray-600 dark:text-gray-300">
-                    Score <strong>{b.latest_audit.score}/100</strong> · {b.latest_audit.checks.filter((c) => !c.passed).length} issues · {ago(b.latest_audit.created_at)}
+                    Score <strong>{b.latest_audit.score}/100</strong> · {b.latest_audit.checks.filter((c) => !c.passed && !c.skipped).length} issues · {ago(b.latest_audit.created_at)}
                   </p>
                 </section>
               )}
