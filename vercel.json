@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "cd frontend && npm ci",
+  "installCommand": "if [ ! -d frontend ]; then echo \"LeadForge: Vercel is building in $(pwd), which has no frontend/ folder. Set Project Settings > Build and Deployment > Root Directory to the repository root (leave it empty).\"; ls -la; exit 1; fi; cd frontend && npm ci",
   "buildCommand": "cd frontend && npm run build:vercel",
   "outputDirectory": "app",
   "functions": {
