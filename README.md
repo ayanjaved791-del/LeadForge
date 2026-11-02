@@ -26,7 +26,8 @@ LeadForge is a self-hosted SaaS platform for **finding local businesses and turn
 
 ```
 leadforge/
-├── api/                    PHP REST API (served by Apache)
+├── vercel.json             Vercel config (static SPA + PHP function)
+├── api/                    PHP REST API (Apache or Vercel function)
 │   ├── index.php           front controller + route table
 │   ├── .htaccess           rewrites to index.php, blocks src/ storage/ config
 │   ├── config.example.php  copy to config.php
@@ -114,6 +115,51 @@ Open http://localhost/leadforge/app/ (or http://localhost/leadforge/, which redi
 
 ### Emails in development
 Mail uses the free `log` driver by default. Verification and password-reset emails are written to `api/storage/mail/*.eml`, so open the newest file to get the link. Set `mail.driver` to `mail` to use PHP `mail()`/sendmail when you deploy.
+
+---
+
+## Deploying to Vercel (free)
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fayanjaved791-del%2Fleadforge&env=DB_HOST,DB_PORT,DB_NAME,DB_USER,DB_PASSWORD,DB_SSL,OSM_USER_AGENT&envDescription=Hosted%20MySQL%20credentials%20and%20your%20OpenStreetMap%20contact%20User-Agent)
+
+Vercel serves the React app as static files. The PHP API runs as a Vercel function through the open-source [`vercel-php`](https://github.com/juicyfx/vercel-php) runtime (PHP 8.3), which `vercel.json` already configures. Vercel has no MySQL, so the database lives on a free hosted MySQL service.
+
+### 1. Create a free MySQL database
+[TiDB Cloud Starter](https://tidbcloud.com) is MySQL-compatible, has a free tier and needs no credit card. [Aiven for MySQL](https://aiven.io/free-mysql-database) (free plan) works too.
+
+1. Create a cluster, then open **Connect** and note the host, port (TiDB uses `4000`), user and password.
+2. Create the tables from your computer. The runner creates the `leadforge` database itself:
+   ```bash
+   cd api
+   DB_HOST=<host> DB_PORT=4000 DB_USER=<user> DB_PASSWORD=<password> DB_NAME=leadforge DB_SSL=true php bin/migrate.php
+   ```
+   Alternatively, paste `database/migrations/001_initial_schema.sql` and then `002_sessions.sql` into the provider's SQL editor.
+
+### 2. Import the repository into Vercel
+Click **Deploy with Vercel** above, or go to **vercel.com → Add New → Project**, pick this repository, and leave the build settings as they are. `vercel.json` provides them. Add these environment variables (see `.env.vercel.example`):
+
+| Variable | Example |
+| --- | --- |
+| `DB_HOST` | `gateway01.eu-central-1.prod.aws.tidbcloud.com` |
+| `DB_PORT` | `4000` |
+| `DB_NAME` | `leadforge` |
+| `DB_USER` / `DB_PASSWORD` | from your database provider |
+| `DB_SSL` | `true` |
+| `OSM_USER_AGENT` | `LeadForge/1.0 (contact: you@example.com)` |
+| `APP_URL` *(optional)* | your custom domain; defaults to the Vercel production URL |
+| `MAIL_DRIVER=smtp` + `SMTP_*` *(optional)* | send verification and reset emails through a free SMTP service (e.g. Brevo's free plan) |
+
+Then press **Deploy**. Every push to `main` redeploys automatically.
+
+### How it works on Vercel
+- `/api/*` is rewritten to `api/index.php`. All other paths serve the SPA (`app/index.html`).
+- When `VERCEL` is set, the API switches to serverless-safe defaults:
+  - PHP sessions are stored in MySQL (`sessions` table);
+  - temporary files go to `/tmp`;
+  - secure cookies are on;
+  - the client IP comes from Vercel's `X-Real-IP` header, so rate limits apply per visitor.
+- Functions may run for up to 60 seconds, enough for Overpass searches.
+- Without SMTP settings, emails can't be delivered on Vercel, because the dev `log` driver writes to `/tmp`. Accounts still work, but the "verify your email" banner stays and password reset is unavailable.
 
 ---
 

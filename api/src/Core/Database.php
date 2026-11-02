@@ -13,17 +13,34 @@ final class Database
     public static function pdo(): PDO
     {
         if (self::$pdo === null) {
-            $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
-                Config::get('db.host'), (int) Config::get('db.port', 3306), Config::get('db.database'));
-            self::$pdo = new PDO($dsn, (string) Config::get('db.username'), (string) Config::get('db.password'), [
-                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                PDO::ATTR_EMULATE_PREPARES   => false,
-                PDO::ATTR_STRINGIFY_FETCHES  => false,
-            ]);
+            self::$pdo = self::connect(true);
             self::$pdo->exec("SET time_zone = '+00:00'");
         }
         return self::$pdo;
+    }
+
+    /** Opens a connection using the configured credentials (TLS when db.ssl is on). */
+    public static function connect(bool $withDatabase): PDO
+    {
+        $dsn = sprintf('mysql:host=%s;port=%d;charset=utf8mb4', Config::get('db.host'), (int) Config::get('db.port', 3306));
+        if ($withDatabase) $dsn .= ';dbname=' . Config::get('db.database');
+        $options = [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false,
+            PDO::ATTR_STRINGIFY_FETCHES  => false,
+        ];
+        if (Config::get('db.ssl')) {
+            $ca = (string) Config::get('db.ssl_ca', '');
+            if ($ca === '') {
+                foreach (['/etc/pki/tls/certs/ca-bundle.crt', '/etc/ssl/certs/ca-certificates.crt', '/etc/ssl/cert.pem'] as $candidate) {
+                    if (is_readable($candidate)) { $ca = $candidate; break; }
+                }
+            }
+            if ($ca !== '') $options[PDO::MYSQL_ATTR_SSL_CA] = $ca;
+            $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = true;
+        }
+        return new PDO($dsn, (string) Config::get('db.username'), (string) Config::get('db.password'), $options);
     }
 
     /** @param array<string|int,mixed> $params */

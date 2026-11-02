@@ -141,7 +141,6 @@ final class Osm
         curl_exec($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $errno = curl_errno($ch);
-        curl_close($ch);
         if ($errno) throw new HttpException(502, 'Could not reach OpenStreetMap services. Check your internet connection.');
         if ($status === 429) throw new HttpException(429, 'OpenStreetMap rate limit reached. Please wait a minute before searching again.');
         if ($status === 504) throw new HttpException(504, 'Overpass API is busy. Try a smaller radius or retry shortly.');
@@ -151,7 +150,7 @@ final class Osm
 
     private static function throttleNominatim(): void
     {
-        $lockFile = dirname(__DIR__, 2) . '/storage/nominatim.lock';
+        $lockFile = Config::get('app.storage_path') . '/nominatim.lock';
         $fh = fopen($lockFile, 'c+');
         if (!$fh) return;
         flock($fh, LOCK_EX);

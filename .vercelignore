@@ -1,0 +1,5 @@
+frontend/node_modules
+app
+api/config.php
+api/storage/mail/*.eml
+api/storage/logs/*.log

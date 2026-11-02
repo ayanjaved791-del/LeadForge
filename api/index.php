@@ -21,36 +21,23 @@ use LeadForge\Core\Response;
 use LeadForge\Core\Router;
 use LeadForge\Core\Session;
 
-spl_autoload_register(static function (string $class): void {
-    $prefix = 'LeadForge\\';
-    if (!str_starts_with($class, $prefix)) return;
-    $file = __DIR__ . '/src/' . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
-    if (is_file($file)) require $file;
-});
-
-$configFile = __DIR__ . '/config.php';
-if (!is_file($configFile)) {
-    http_response_code(500);
-    header('Content-Type: application/json');
-    echo json_encode(['error' => ['message' => 'API not configured: copy api/config.example.php to api/config.php']]);
-    exit;
-}
-Config::load(require $configFile);
+require __DIR__ . '/bootstrap.php';
 
 $isDev = Config::get('app.env') !== 'production';
 ini_set('display_errors', '0');
 error_reporting(E_ALL);
-date_default_timezone_set('UTC');
 
 set_exception_handler(static function (\Throwable $e) use ($isDev): void {
     if ($e instanceof HttpException) Response::error($e->status, $e->getMessage(), $e->errors);
     error_log('[LeadForge] ' . $e::class . ': ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
-    @file_put_contents(__DIR__ . '/storage/logs/error.log', gmdate('c') . ' ' . $e::class . ': ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine() . "\n", FILE_APPEND);
+    @file_put_contents(Config::get('app.storage_path') . '/logs/error.log', gmdate('c') . ' ' . $e::class . ': ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine() . "\n", FILE_APPEND);
     if ($e instanceof \PDOException) Response::error(500, $isDev ? 'Database error: ' . $e->getMessage() : 'A database error occurred.');
     Response::error(500, $isDev ? $e->getMessage() : 'An unexpected error occurred.');
 });
 set_error_handler(static function (int $no, string $str, string $file, int $line): bool {
     if (!(error_reporting() & $no)) return false;
+    // Deprecation notices (e.g. on newer PHP versions) must never break a request.
+    if (in_array($no, [E_DEPRECATED, E_USER_DEPRECATED], true)) return true;
     throw new \ErrorException($str, 0, $no, $file, $line);
 });
 

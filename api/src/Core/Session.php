@@ -11,8 +11,13 @@ final class Session
         ini_set('session.use_strict_mode', '1');
         ini_set('session.use_only_cookies', '1');
         ini_set('session.cookie_httponly', '1');
-        ini_set('session.sid_length', '48');
-        ini_set('session.sid_bits_per_character', '6');
+        if (PHP_VERSION_ID < 80400) {
+            ini_set('session.sid_length', '48');
+            ini_set('session.sid_bits_per_character', '6');
+        }
+        if (Config::get('session.driver') === 'database') {
+            session_set_save_handler(new DatabaseSessionHandler(), true);
+        }
         ini_set('session.gc_maxlifetime', (string) Config::get('session.lifetime', 604800));
         session_name((string) Config::get('session.name', 'leadforge_sid'));
         session_set_cookie_params([

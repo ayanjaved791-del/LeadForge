@@ -151,7 +151,6 @@ final class SafeHttp
         $errno = curl_errno($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $err = curl_error($ch);
-        curl_close($ch);
 
         if ($errno && !($truncated && $errno === CURLE_WRITE_ERROR)) {
             $code = match ($errno) {

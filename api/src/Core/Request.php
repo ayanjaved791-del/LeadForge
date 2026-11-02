@@ -26,6 +26,8 @@ final class Request
         $base = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
         if ($base !== '' && str_starts_with($uri, $base)) $uri = substr($uri, strlen($base));
         $uri = '/' . trim(preg_replace('#^/index\.php#', '', $uri) ?? '', '/');
+        // Hosts that route /api/* to this script without changing SCRIPT_NAME (e.g. Vercel): no route starts with /api.
+        if ($uri === '/api' || str_starts_with($uri, '/api/')) $uri = '/' . trim(substr($uri, 4), '/');
         return new self(strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET'), $uri);
     }
 
@@ -48,5 +50,14 @@ final class Request
         return $_SERVER[$key] ?? null;
     }
 
-    public function ip(): string { return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0'; }
+    public function ip(): string
+    {
+        if (Config::get('app.trust_proxy')) {
+            $real = $_SERVER['HTTP_X_REAL_IP'] ?? '';
+            if (filter_var($real, FILTER_VALIDATE_IP)) return $real;
+            $first = trim(explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))[0]);
+            if (filter_var($first, FILTER_VALIDATE_IP)) return $first;
+        }
+        return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    }
 }
